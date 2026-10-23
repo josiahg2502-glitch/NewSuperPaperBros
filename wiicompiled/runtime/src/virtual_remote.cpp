@@ -472,7 +472,7 @@ void UpdatePointer(WiiRemoteInput::KpadSample& sample) {
     SDL_free(ids);
 
     // Mouse over the game window (absolute): the game's own 16:9 (or 4:3) view inside the presented picture.
-    if (SDL_Window* window = SDL_GetMouseFocus()) {
+    if (SDL_Window* window = RuntimeConfigFile::MousePointer(true) ? SDL_GetMouseFocus() : nullptr) {
         float mx = 0.0f, my = 0.0f;
         const SDL_MouseButtonFlags buttons = SDL_GetMouseState(&mx, &my);
         int w = 0, h = 0;

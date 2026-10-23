@@ -11,9 +11,14 @@ extern "C" int g_spmSweepDump;
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <atomic>
+#include <functional>
+#include <mutex>
+#include <vector>
 #include <string>
 #include <vector>
 
@@ -168,6 +173,99 @@ void RunMtxSelfTest(CpuContext* cpu) {
 
 // US0 seqSetSeq (0x8017B3C8) stores seq/map/entry; seq_gameInit reads gp->mapName at +0x44.
 constexpr uint32_t kNowSeq = 0x8056D0D8, kNextSeq = 0x8056D0DC, kGp = 0x8056D198;
+
+// Debug menu warps (settings_overlay.cpp): the request is stored by the UI and served here, on the game's own frame.
+std::mutex g_warpMutex;
+bool g_warpPending = false, g_warpHasDoor = false;
+char g_warpMap[32], g_warpDoor[32];
+std::vector<std::function<void(CpuContext*)>> g_jobs;
+std::atomic<int> g_lastResult{0};
+
+uint32_t CallGuest(CpuContext* cpu, uint32_t fn, uint32_t r3, uint32_t r4 = 0) {
+    CpuContext call = *cpu;
+    call.gpr[3] = r3;
+    call.gpr[4] = r4;
+    InvokeIndirectCpu(fn, &call);
+    return call.gpr[3];
+}
+
+void Enqueue(std::function<void(CpuContext*)> job) {
+    std::lock_guard<std::mutex> lock(g_warpMutex);
+    g_jobs.push_back(std::move(job));
+}
+
+void RunJobs(CpuContext* cpu) {
+    std::vector<std::function<void(CpuContext*)>> jobs;
+    {
+        std::lock_guard<std::mutex> lock(g_warpMutex);
+        uint32_t now = 0, after = 0;
+        if (g_jobs.empty() || !Memory::TryRead32(kNowSeq, now) || !Memory::TryRead32(kNextSeq, after) || now != 2 || after != 2) return;
+        jobs.swap(g_jobs);
+    }
+    for (auto& job : jobs) job(cpu);
+}
+
+void WatchStep(CpuContext* cpu);
+
+// A map change started before the game has finished loading its effects hangs at stage 11 of the map change (nothing
+// is ever shown). The sweep tool waits for the same state before it warps, so the Debug menu does too, and it also
+// waits for the map to have been running for a moment.
+[[maybe_unused]] bool WarpEffectsReady() {
+    uint32_t effects = 0, pending = 0, ready = 0, data = 0, a = 0, b = 0;
+    Memory::TryRead32(0x8056CFB0, effects);
+    if (!effects || !Memory::Contains(effects, 16)) return false;
+    Memory::TryRead32(effects + 8, pending);
+    Memory::TryRead32(effects + 12, ready);
+    Memory::TryRead32(0x8056D804, data);
+    if (!pending || !ready || !data || !Memory::Contains(data, 20)) return false;
+    Memory::TryRead32(data + 12, a);
+    Memory::TryRead32(data + 16, b);
+    return a && b;
+}
+
+void ServiceWarp(CpuContext* cpu) {
+    if (!cpu) return;
+    RunJobs(cpu);
+    WatchStep(cpu);
+    static uint32_t inMapFrames = 0;
+    {
+        uint32_t now = 0, after = 0;
+        if (Memory::TryRead32(kNowSeq, now) && Memory::TryRead32(kNextSeq, after) && now == 2 && after == 2) ++inMapFrames;
+        else inMapFrames = 0;
+    }
+    char map[32], door[32];
+    bool hasDoor;
+    {
+        std::lock_guard<std::mutex> lock(g_warpMutex);
+        if (!g_warpPending) return;
+        uint32_t now = 0, after = 0;
+        if (!Memory::TryRead32(kNowSeq, now) || !Memory::TryRead32(kNextSeq, after) || now != 2 || after != 2) return;
+        if (inMapFrames < 120) return;   // WarpEffectsReady() is only true during cutscenes, so it cannot gate normal play
+        std::memcpy(map, g_warpMap, sizeof map);
+        std::memcpy(door, g_warpDoor, sizeof door);
+        hasDoor = g_warpHasDoor;
+        g_warpPending = false;
+    }
+    static uint32_t buffer = 0;
+    if (!buffer) {
+        CpuContext call = *cpu;
+        call.gpr[3] = 0;  // __memAlloc(HEAP_MAIN, 64), kept across map changes
+        call.gpr[4] = 64;
+        InvokeIndirectCpu(0x801A5634, &call);
+        buffer = call.gpr[3];
+    }
+    if (!buffer || !Memory::Contains(buffer, 64)) return;
+    for (uint32_t i = 0; i < 32; ++i) {
+        Memory::Write8(buffer + i, uint8_t(map[i]));
+        Memory::Write8(buffer + 32 + i, uint8_t(door[i]));
+    }
+    CpuContext call = *cpu;
+    call.gpr[3] = 3;  // seqSetSeq(SEQ_MAPCHANGE, mapName, doorName)
+    call.gpr[4] = buffer;
+    call.gpr[5] = hasDoor ? buffer + 32 : 0;
+    InvokeIndirectCpu(0x8017B3C8, &call);
+    RT_LOGF(RT_TAG_RUNTIME, "[spmwarp] %s %s\n", map, hasDoor ? door : "(default door)");
+}
 
 struct Sweep {
     bool enabled = false, pending = false, changed = false, sampling = false;
@@ -471,7 +569,230 @@ void Tick(CpuContext* cpu, uint32_t presentedFrames) {
             }
         }
     }
+    ServiceWarp(cpu);
     static Sweep sweep;
     sweep.Tick(cpu, presentedFrames);
+}
+void RequestWarp(const char* map, const char* door) {
+    std::lock_guard<std::mutex> lock(g_warpMutex);
+    std::memset(g_warpMap, 0, sizeof g_warpMap);
+    std::memset(g_warpDoor, 0, sizeof g_warpDoor);
+    std::strncpy(g_warpMap, map, sizeof g_warpMap - 1);
+    g_warpHasDoor = door && *door;
+    if (g_warpHasDoor) std::strncpy(g_warpDoor, door, sizeof g_warpDoor - 1);
+    g_warpPending = true;
+}
+void AddItem(int itemId) {
+    Enqueue([=](CpuContext* cpu) { g_lastResult = int(CallGuest(cpu, 0x8014CB04, uint32_t(itemId))); });      // pouchAddItem
+}
+void RemoveItem(int itemId) {
+    Enqueue([=](CpuContext* cpu) { CallGuest(cpu, 0x8014D458, uint32_t(itemId)); });                          // pouchRemoveItem
+}
+void Unlock(int itemId, bool pixl) {
+    Enqueue([=](CpuContext* cpu) {
+        CallGuest(cpu, 0x8014CB04, uint32_t(itemId));                                                         // pouchAddItem
+        CallGuest(cpu, pixl ? 0x8014E5A4u : 0x8014E4BCu, uint32_t(itemId));                                   // pouchMake{Pixl,Char}Selectable
+    });
+}
+void AddCoins(int amount) {
+    Enqueue([=](CpuContext* cpu) { CallGuest(cpu, 0x8014CA98, uint32_t(amount)); });                          // pouchAddCoin
+}
+void SetHp(int hp, int maxHp) {
+    Enqueue([=](CpuContext* cpu) {
+        CallGuest(cpu, 0x8014C9C0, uint32_t(maxHp));                                                          // pouchSetMaxHp
+        CallGuest(cpu, 0x8014C920, uint32_t(hp));                                                             // pouchSetHp
+    });
+}
+void SetSystemFlag(int flag, bool on) {
+    Enqueue([=](CpuContext* cpu) { CallGuest(cpu, on ? 0x80037E90u : 0x80037F18u, uint32_t(flag)); });         // swSet / swClear
+}
+void SetGsw(int index, int value) {
+    Enqueue([=](CpuContext* cpu) {
+        if (index == 0) {                                                                                     // GSW(0) is a full s32 in the game work
+            uint32_t gp = 0;
+            if (Memory::TryRead32(kGp, gp) && Memory::Contains(gp, 0x144)) Memory::Write32(gp + 0x140, uint32_t(value));
+        } else {
+            CallGuest(cpu, 0x80037F58, uint32_t(index), uint32_t(value));                                     // swByteSet
+        }
+    });
+}
+void ReadSystemFlag(int flag) {
+    Enqueue([=](CpuContext* cpu) { g_lastResult = int(CallGuest(cpu, 0x80037ED0, uint32_t(flag))); });         // swGet
+}
+int Gsw0() {
+    uint32_t gp = 0;
+    if (!Memory::TryRead32(kGp, gp) || gp < 0x80004000 || !Memory::Contains(gp, 0x144)) return -1;
+    return int(Memory::Read32(gp + 0x140));
+}
+int LastResult() { return g_lastResult.load(); }
+
+namespace {
+std::mutex g_stateMutex;
+DebugState g_state;
+std::atomic<bool> g_statePending{false};
+}
+
+void RequestState() {
+    if (g_statePending.exchange(true)) return;
+    Enqueue([](CpuContext* cpu) {
+        DebugState st;
+        st.valid = true;
+        Memory::TryRead32(kNowSeq, st.seq);
+        uint32_t gp = 0;
+        if (Memory::TryRead32(kGp, gp) && Memory::Contains(gp, 0x64))
+            for (uint32_t i = 0; i < 31; ++i) st.map[i] = static_cast<char>(Memory::Read8(gp + 0x44 + i));
+        const uint32_t mw = CallGuest(cpu, 0x801214EC, 0);                     // marioGetPtr
+        if (Memory::Contains(mw, 0x320)) {
+            for (int i = 0; i < 3; ++i) st.pos[i] = Memory::ReadFloat32(mw + 0x5C + 4 * i);
+            st.held = Memory::Read16(mw + 0x30C);
+        }
+        const uint32_t pouch = CallGuest(cpu, 0x8014B594, 0);                  // pouchGetPtr
+        if (Memory::Contains(pouch, sizeof st.pouch))
+            for (uint32_t i = 0; i < sizeof st.pouch; ++i) st.pouch[i] = Memory::Read8(pouch + i);
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            g_state = st;
+        }
+        g_statePending = false;
+    });
+}
+bool GetState(DebugState& out) {
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    out = g_state;
+    return g_state.valid;
+}
+void SetPouch(int offset, int value) {
+    Enqueue([=](CpuContext* cpu) {
+        const uint32_t pouch = CallGuest(cpu, 0x8014B594, 0);
+        if (offset >= 0 && offset + 4 <= 0x6A0 && Memory::Contains(pouch, 0x6A0)) Memory::Write32(pouch + offset, uint32_t(value));
+    });
+}
+void SetVar(int type, int index, int value) {
+    if (type == 0) { SetGsw(index, value); return; }
+    Enqueue([=](CpuContext* cpu) {
+        switch (type) {
+        case 1: CallGuest(cpu, value ? 0x80037E90u : 0x80037F18u, uint32_t(index)); break;                   // swSet / swClear
+        case 2: CallGuest(cpu, 0x800380C8, uint32_t(index), uint32_t(value)); break;                          // _swByteSet
+        case 3: CallGuest(cpu, value ? 0x80038000u : 0x80038088u, uint32_t(index)); break;                    // _swSet / _swClear
+        }
+    });
+}
+void ReadVar(int type, int index) {
+    Enqueue([=](CpuContext* cpu) {
+        switch (type) {
+        case 0: g_lastResult = index == 0 ? Gsw0() : int(CallGuest(cpu, 0x80037FDC, uint32_t(index))); break;  // swByteGet
+        case 1: g_lastResult = int(CallGuest(cpu, 0x80037ED0, uint32_t(index))); break;                        // swGet
+        case 2: g_lastResult = int(CallGuest(cpu, 0x800380D8, uint32_t(index))); break;                        // _swByteGet
+        case 3: g_lastResult = int(CallGuest(cpu, 0x80038040, uint32_t(index))); break;                        // _swGet
+        }
+    });
+}
+
+namespace {
+std::atomic<bool> g_watch{false};
+std::mutex g_watchMutex;
+std::vector<std::string> g_watchLog;
+uint8_t g_flagPrev[8192];
+uint8_t g_gswPrev[512];
+bool g_watchPrimed = false;
+uint32_t g_watchTick = 0;
+float g_savedPos[3];
+std::atomic<bool> g_hasSavedPos{false};
+
+void WatchStep(CpuContext* cpu) {
+    if (!g_watch) { g_watchPrimed = false; return; }
+    if (++g_watchTick % 20) return;
+    uint32_t now = 0, after = 0;
+    if (!Memory::TryRead32(kNowSeq, now) || !Memory::TryRead32(kNextSeq, after) || now != 2 || after != 2) return;
+    std::vector<std::string> changes;
+    char line[64];
+    for (int n = 0; n < 8192; ++n) {
+        const uint8_t v = uint8_t(CallGuest(cpu, 0x80037ED0, uint32_t(n)) & 1);          // swGet
+        if (g_watchPrimed && v != g_flagPrev[n]) {
+            std::snprintf(line, sizeof line, "GSWF %d: %d -> %d", n, g_flagPrev[n], v);
+            changes.emplace_back(line);
+        }
+        g_flagPrev[n] = v;
+    }
+    for (int n = 1; n < 512; ++n) {
+        const uint8_t v = uint8_t(CallGuest(cpu, 0x80037FDC, uint32_t(n)));              // swByteGet
+        if (g_watchPrimed && v != g_gswPrev[n]) {
+            std::snprintf(line, sizeof line, "GSW %d: %d -> %d", n, g_gswPrev[n], v);
+            changes.emplace_back(line);
+        }
+        g_gswPrev[n] = v;
+    }
+    static int lastGsw0 = -1;
+    const int gsw0 = Gsw0();
+    if (g_watchPrimed && gsw0 != lastGsw0) {
+        std::snprintf(line, sizeof line, "GSW 0: %d -> %d", lastGsw0, gsw0);
+        changes.emplace_back(line);
+    }
+    lastGsw0 = gsw0;
+    g_watchPrimed = true;
+    if (!changes.empty()) {
+        std::lock_guard<std::mutex> lock(g_watchMutex);
+        for (auto& c : changes) g_watchLog.push_back(std::move(c));
+        if (g_watchLog.size() > 400) g_watchLog.erase(g_watchLog.begin(), g_watchLog.begin() + (g_watchLog.size() - 400));
+    }
+}
+}
+
+void SetWatch(bool on) { g_watch = on; }
+bool WatchEnabled() { return g_watch.load(); }
+std::vector<std::string> GetWatchLog() {
+    std::lock_guard<std::mutex> lock(g_watchMutex);
+    return g_watchLog;
+}
+void ClearWatchLog() {
+    std::lock_guard<std::mutex> lock(g_watchMutex);
+    g_watchLog.clear();
+}
+void SavePosition() {
+    Enqueue([](CpuContext* cpu) {
+        const uint32_t mw = CallGuest(cpu, 0x801214EC, 0);
+        if (!Memory::Contains(mw, 0x70)) return;
+        for (int i = 0; i < 3; ++i) g_savedPos[i] = Memory::ReadFloat32(mw + 0x5C + 4 * i);
+        g_hasSavedPos = true;
+    });
+}
+void LoadPosition() {
+    Enqueue([](CpuContext* cpu) {
+        if (!g_hasSavedPos) return;
+        const uint32_t mw = CallGuest(cpu, 0x801214EC, 0);
+        if (!Memory::Contains(mw, 0x70)) return;
+        for (int i = 0; i < 3; ++i) Memory::WriteFloat32(mw + 0x5C + 4 * i, g_savedPos[i]);
+    });
+}
+bool HasSavedPosition() { return g_hasSavedPos.load(); }
+void Heal() {
+    Enqueue([](CpuContext* cpu) {
+        const uint32_t pouch = CallGuest(cpu, 0x8014B594, 0);
+        if (Memory::Contains(pouch, 0x14)) Memory::Write32(pouch + 0x0C, Memory::Read32(pouch + 0x10));
+    });
+}
+
+namespace {
+std::mutex g_flagSnapMutex;
+uint8_t g_flagSnap[8192];
+std::atomic<bool> g_flagSnapPending{false};
+}
+
+void RequestFlagSnapshot() {
+    if (g_flagSnapPending.exchange(true)) return;
+    Enqueue([](CpuContext* cpu) {
+        static uint8_t fresh[8192];
+        for (int n = 0; n < 8192; ++n) fresh[n] = uint8_t(CallGuest(cpu, 0x80037ED0, uint32_t(n)) & 1);   // swGet
+        {
+            std::lock_guard<std::mutex> lock(g_flagSnapMutex);
+            std::memcpy(g_flagSnap, fresh, sizeof g_flagSnap);
+        }
+        g_flagSnapPending = false;
+    });
+}
+bool FlagValue(int flag) {
+    if (flag < 0 || flag >= 8192) return false;
+    std::lock_guard<std::mutex> lock(g_flagSnapMutex);
+    return g_flagSnap[flag] != 0;
 }
 } // namespace SpmMapSweep

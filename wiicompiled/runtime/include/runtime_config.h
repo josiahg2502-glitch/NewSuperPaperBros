@@ -51,6 +51,7 @@ struct RuntimeUserConfig {
     std::optional<bool> textureReplacements;
     std::optional<bool> textureDumps;
     std::optional<bool> showFps;
+    std::optional<bool> mousePointer;   // [input] mouse_pointer: the mouse aims the Wii pointer (default on)
     std::optional<bool> spinningCoins;  // NSMBW: [video] spinning_coins, animated tiles
     std::optional<bool> frameGraph;     // NSMBW: [video] frame_graph, frame times under the FPS counter
     std::optional<bool> vsync;          // NSMBW: [video] vsync, presents wait for the display (Windows)
@@ -585,6 +586,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.skipUnreadyPipelines = FindConfigValue<bool>(document, "video", "skip_unready_pipelines");
     config.disableCopyFilter = FindConfigValue<bool>(document, "video", "disable_copy_filter");
     config.showFps = FindConfigValue<bool>(document, "video", "show_fps");
+    config.mousePointer = FindConfigValue<bool>(document, "input", "mouse_pointer");
     config.spinningCoins = FindConfigValue<bool>(document, "video", "spinning_coins");
     config.frameGraph = FindConfigValue<bool>(document, "video", "frame_graph");
     config.vsync = FindConfigValue<bool>(document, "video", "vsync");
@@ -800,6 +802,17 @@ inline bool SetMetalFxSpatialUpscaling(bool value) {
     return WriteSetting("video", "metalfx_spatial_upscaling", value ? "true" : "false");
 }
 
+inline bool SetLanguage(std::string value) {
+    static constexpr const char* kCodes[] = {"en", "de", "fr", "es", "it"};
+    bool known = false;
+    for (const char* code : kCodes) known = known || value == code;
+    if (!known) {
+        return false;
+    }
+    Mutable().language = value;
+    return WriteSetting("game", "language", FormatString(value));
+}
+
 inline bool SetDisplayMode(std::string value) {
     if (!IsSupportedDisplayMode(value)) {
         return false;
@@ -816,6 +829,15 @@ inline bool SetSkipUnreadyPipelines(bool value) {
 inline bool SetDisableCopyFilter(bool value) {
     Mutable().disableCopyFilter = value;
     return WriteSetting("video", "disable_copy_filter", value ? "true" : "false");
+}
+
+inline bool MousePointer(bool fallback = true) {
+    return Get().mousePointer.value_or(fallback);
+}
+
+inline bool SetMousePointer(bool value) {
+    Mutable().mousePointer = value;
+    return WriteSetting("input", "mouse_pointer", value ? "true" : "false");
 }
 
 inline bool SpinningCoins(bool fallback = true) {
