@@ -164,6 +164,9 @@ constexpr DebugText kDebugText[] = {
     {{"Unlock all characters and Pixls", "Alle Figuren und Pixls freischalten", "Débloquer tous les personnages et Pixls", "Desbloquear todos los personajes y Pixls", "Sblocca tutti i personaggi e Pixl"}},
     {{"Save position", "Position speichern", "Sauver la position", "Guardar posición", "Salva posizione"}},
     {{"Load position", "Position laden", "Charger la position", "Cargar posición", "Carica posizione"}},
+    {{"Arrive at X Y Z", "Ankunft bei X Y Z", "Arriver en X Y Z", "Llegar a X Y Z", "Arriva a X Y Z"}},
+    {{"Teleport", "Teleportieren", "Téléporter", "Teletransportar", "Teletrasporta"}},
+    {{"Position: %.0f  %.0f  %.0f", "Position: %.0f  %.0f  %.0f", "Position : %.0f  %.0f  %.0f", "Posición: %.0f  %.0f  %.0f", "Posizione: %.0f  %.0f  %.0f"}},
     {{"Exit", "Beenden", "Quitter", "Salir", "Esci"}},
     {{"Close (F10)", "Schließen (F10)", "Fermer (F10)", "Cerrar (F10)", "Chiudi (F10)"}},
     {{"Menu size", "Menügröße", "Taille du menu", "Tamaño del menú", "Dimensione menu"}},
@@ -1874,8 +1877,16 @@ void DrawWarpMenu() {
     ImT::InputText(Tr("Map"), mapName, sizeof mapName);
     ImGui::SetNextItemWidth(160.0f);
     ImT::InputText(Tr("Door (optional)"), doorName, sizeof doorName);
+    static bool usePos = false;
+    static float arrival[3] = {};
+    ImT::Checkbox(Tr("Arrive at X Y Z"), &usePos);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!usePos);
+    ImGui::SetNextItemWidth(260.0f);
+    ImGui::InputFloat3("##arrival", arrival, "%.0f");
+    ImGui::EndDisabled();
     if (ImT::Button(Tr("Warp to this map"))) {
-        SpmMapSweep::RequestWarp(mapName, doorName);
+        SpmMapSweep::RequestWarp(mapName, doorName, usePos ? arrival : nullptr);
         SetTopBarVisible(false);
     }
     ImT::TextDisabled("%s", Tr("Warp: story progress and flags are not changed."));
@@ -1903,7 +1914,7 @@ void DrawWarpMenu() {
                                              : std::strcmp(room.group, groups[group]) == 0;
             if (!shown) continue;
             if (ImT::Selectable(room.label)) {
-                SpmMapSweep::RequestWarp(room.map, room.door);
+                SpmMapSweep::RequestWarp(room.map, room.door, usePos ? arrival : nullptr);
                 SetTopBarVisible(false);
             }
         }
@@ -2285,6 +2296,16 @@ void DrawQuickPage() {
     ImGui::BeginDisabled(!SpmMapSweep::HasSavedPosition());
     if (ImT::Button(Tr("Load position"))) SpmMapSweep::LoadPosition();
     ImGui::EndDisabled();
+    {
+        SpmMapSweep::RequestState();
+        SpmMapSweep::DebugState st;
+        if (SpmMapSweep::GetState(st)) ImT::TextDisabled(Tr("Position: %.0f  %.0f  %.0f"), st.pos[0], st.pos[1], st.pos[2]);
+        static float target[3] = {};
+        ImGui::SetNextItemWidth(260.0f);
+        ImGui::InputFloat3("##teleport", target, "%.0f");
+        ImGui::SameLine();
+        if (ImT::Button(Tr("Teleport"))) SpmMapSweep::TeleportTo(target[0], target[1], target[2]);
+    }
     ImGui::Separator();
     DrawPlayerMenu();
     ImGui::Separator();

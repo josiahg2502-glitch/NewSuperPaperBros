@@ -59,6 +59,12 @@ void initialize() noexcept {
   ZoneScoped;
   SDL_Renderer* renderer = window::get_sdl_renderer();
   ImGui_ImplSDL3_InitForSDLRenderer(window::get_sdl_window(), renderer);
+  // ImGui starts/stops SDL text input from ImGui::EndFrame, which runs on the frame worker thread. On Windows that
+  // sends a message to the window (ImmAssociateContext) and waits for the main thread, which is itself waiting for
+  // the frame worker: closing a menu with a text field focused froze the window. Keep text input on, set here on
+  // the main thread, and let ImGui leave it alone.
+  ImGui::GetPlatformIO().Platform_SetImeDataFn = nullptr;
+  SDL_StartTextInput(window::get_sdl_window());
   g_useSdlRenderer = renderer != nullptr;
   if (g_useSdlRenderer) {
     ImGui_ImplSDLRenderer3_Init(renderer);

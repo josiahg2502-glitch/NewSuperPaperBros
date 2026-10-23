@@ -7,7 +7,7 @@ struct CpuContext;
 namespace SpmMapSweep {
 void Tick(CpuContext* cpu, uint32_t presentedFrames);
 // Debug menu: warp to `map` through seqSetSeq on the next frame the game is in a map (door may be null).
-void RequestWarp(const char* map, const char* door);
+void RequestWarp(const char* map, const char* door, const float* arrivalPos = nullptr);   // arrivalPos: x y z, or none
 
 // Debug menu actions, run on the game's own frame (the UI thread only queues them). Each one calls the game's own
 // function (pouchAddItem, swSet, ...) so the game's state stays consistent.
@@ -56,6 +56,7 @@ bool FlagValue(int flag);
 
 void SavePosition();     // remember Mario's x y z
 void LoadPosition();     // put Mario back there
+void TeleportTo(float x, float y, float z);
 bool HasSavedPosition();
 void Heal();             // HP = max HP
 }

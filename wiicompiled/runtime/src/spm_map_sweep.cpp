@@ -178,6 +178,10 @@ constexpr uint32_t kNowSeq = 0x8056D0D8, kNextSeq = 0x8056D0DC, kGp = 0x8056D198
 // Debug menu warps (settings_overlay.cpp): the request is stored by the UI and served here, on the game's own frame.
 std::mutex g_warpMutex;
 bool g_warpPending = false, g_warpHasDoor = false;
+bool g_warpHasPos = false;
+float g_warpPos[3] = {};
+int g_arrivalStage = 0;        // 1: warp issued, 2: new map loading, then Mario is placed at g_arrivalPos
+float g_arrivalPos[3] = {};
 char g_warpMap[32], g_warpDoor[32];
 std::vector<std::function<void(CpuContext*)>> g_jobs;
 std::atomic<int> g_lastResult{0};
@@ -234,6 +238,29 @@ void ServiceWarp(CpuContext* cpu) {
         if (Memory::TryRead32(kNowSeq, now) && Memory::TryRead32(kNextSeq, after) && now == 2 && after == 2) ++inMapFrames;
         else inMapFrames = 0;
     }
+    if (g_arrivalStage == 1 && inMapFrames == 0) g_arrivalStage = 2;
+    if (g_arrivalStage == 2) {
+        // Place Mario only once the arrival is over: the door/pipe entrance moves Mario itself and waits for him, so a
+        // teleport during it left the event waiting forever. Wait for marioWork.ctrl (0x34) and keyOff (0x35) at 0
+        // and a position unchanged for 10 frames; give up after 15 s.
+        static float last[3] = {};
+        static uint32_t still = 0;
+        const uint32_t mw = CallGuest(cpu, 0x801214EC, 0);                                                  // marioGetPtr
+        if (inMapFrames > 900 || !Memory::Contains(mw, 0x70)) {
+            g_arrivalStage = 0;
+        } else if (inMapFrames >= 30) {
+            float pos[3];
+            for (int i = 0; i < 3; ++i) pos[i] = Memory::ReadFloat32(mw + 0x5C + 4 * i);
+            const bool control = Memory::Read8(mw + 0x34) == 0 && Memory::Read8(mw + 0x35) == 0;
+            still = control && pos[0] == last[0] && pos[1] == last[1] && pos[2] == last[2] ? still + 1 : 0;
+            std::memcpy(last, pos, sizeof last);
+            if (still >= 10) {
+                g_arrivalStage = 0;
+                still = 0;
+                for (int i = 0; i < 3; ++i) Memory::WriteFloat32(mw + 0x5C + 4 * i, g_arrivalPos[i]);
+            }
+        }
+    }
     char map[32], door[32];
     bool hasDoor;
     {
@@ -246,6 +273,8 @@ void ServiceWarp(CpuContext* cpu) {
         std::memcpy(door, g_warpDoor, sizeof door);
         hasDoor = g_warpHasDoor;
         g_warpPending = false;
+        g_arrivalStage = g_warpHasPos ? 1 : 0;
+        std::memcpy(g_arrivalPos, g_warpPos, sizeof g_arrivalPos);
     }
     static uint32_t buffer = 0;
     if (!buffer) {
@@ -574,8 +603,10 @@ void Tick(CpuContext* cpu, uint32_t presentedFrames) {
     static Sweep sweep;
     sweep.Tick(cpu, presentedFrames);
 }
-void RequestWarp(const char* map, const char* door) {
+void RequestWarp(const char* map, const char* door, const float* arrivalPos) {
     std::lock_guard<std::mutex> lock(g_warpMutex);
+    g_warpHasPos = arrivalPos != nullptr;
+    if (arrivalPos) std::memcpy(g_warpPos, arrivalPos, sizeof g_warpPos);
     std::memset(g_warpMap, 0, sizeof g_warpMap);
     std::memset(g_warpDoor, 0, sizeof g_warpDoor);
     std::strncpy(g_warpMap, map, sizeof g_warpMap - 1);
@@ -845,6 +876,15 @@ void SavePosition() {
         if (!Memory::Contains(mw, 0x70)) return;
         for (int i = 0; i < 3; ++i) g_savedPos[i] = Memory::ReadFloat32(mw + 0x5C + 4 * i);
         g_hasSavedPos = true;
+    });
+}
+void TeleportTo(float x, float y, float z) {
+    Enqueue([=](CpuContext* cpu) {
+        const uint32_t mw = CallGuest(cpu, 0x801214EC, 0);                                                  // marioGetPtr
+        if (!Memory::Contains(mw, 0x70)) return;
+        Memory::WriteFloat32(mw + 0x5C, x);
+        Memory::WriteFloat32(mw + 0x60, y);
+        Memory::WriteFloat32(mw + 0x64, z);
     });
 }
 void LoadPosition() {
