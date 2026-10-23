@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "tex_copy_conv.hpp"
 #include "tex_copy_format_contract.hpp"
 
@@ -593,6 +594,12 @@ static void execute(const wgpu::CommandEncoder& cmd, const ConvRequest& req, con
   const auto pass = cmd.BeginRenderPass(&renderPassDescriptor);
   pass.SetPipeline(pipeline);
   pass.SetBindGroup(0, bindGroup);
+  if (req.viewportWidth != 0 && req.viewportHeight != 0) {
+    const auto w = std::min<uint32_t>(req.viewportWidth, req.dst->size.width);
+    const auto h = std::min<uint32_t>(req.viewportHeight, req.dst->size.height);
+    pass.SetViewport(0.f, 0.f, static_cast<float>(w), static_cast<float>(h), 0.f, 1.f);
+    pass.SetScissorRect(0, 0, w, h);
+  }
   pass.Draw(3);
   pass.End();
 }
