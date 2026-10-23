@@ -117,6 +117,10 @@ constexpr DebugText kDebugText[] = {
     {{"Usable items", "Benutzbare Items", "Objets utilisables", "Objetos usables", "Oggetti usabili"}},
     {{"Characters and Pixls", "Figuren und Pixls", "Personnages et Pixls", "Personajes y Pixls", "Personaggi e Pixl"}},
     {{"  [selectable]", "  [wählbar]", "  [sélectionnable]", "  [seleccionable]", "  [selezionabile]"}},
+    {{"Title screen", "Titelbildschirm", "Écran titre", "Pantalla de título", "Schermata del titolo"}},
+    {{"  [in use]", "  [aktiv]", "  [utilisé]", "  [en uso]", "  [in uso]"}},
+    {{"The character you play can't be removed.", "Die gespielte Figur kann nicht entfernt werden.", "Le personnage joué ne peut pas être retiré.", "No se puede quitar al personaje que juegas.", "Il personaggio che usi non può essere rimosso."}},
+    {{"Remove all Pixls", "Alle Pixls entfernen", "Retirer tous les Pixls", "Quitar todos los Pixls", "Rimuovi tutti i Pixl"}},
     {{"Type", "Typ", "Type", "Tipo", "Tipo"}},
     {{"Number", "Nummer", "Numéro", "Número", "Numero"}},
     {{"Value", "Wert", "Valeur", "Valor", "Valore"}},
@@ -2039,6 +2043,16 @@ void DrawHudMenu() {
     ImT::Checkbox(Tr("Controller inputs"), &g_hudInputs);
 }
 
+// The pouch snapshot holds the guest's big-endian bytes.
+int PouchS32(const SpmMapSweep::DebugState& st, int offset) {
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(st.pouch) + offset;
+    return int(int32_t(uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]));
+}
+int PouchS16(const SpmMapSweep::DebugState& st, int offset) {
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(st.pouch) + offset;
+    return int(int16_t(uint16_t(p[0]) << 8 | p[1]));
+}
+
 void DrawStatsMenu() {
     static const struct { const char* name; int offset; } kStats[] = {
         {"Level", 0x04}, {"Attack", 0x08}, {"HP", 0x0C}, {"Max HP", 0x10}, {"XP", 0x18}, {"Coins", 0x1C}, {"Arcade tokens", 0x688}};
@@ -2047,11 +2061,11 @@ void DrawStatsMenu() {
     SpmMapSweep::DebugState st;
     const bool have = SpmMapSweep::GetState(st);
     if (ImT::Button(Tr("Read current values")) && have)
-        for (int i = 0; i < 7; ++i) std::memcpy(&values[i], st.pouch + kStats[i].offset, 4);
+        for (int i = 0; i < 7; ++i) values[i] = PouchS32(st, kStats[i].offset);
     for (int i = 0; i < 7; ++i) {
         ImGui::PushID(i);
         int now = 0;
-        if (have) std::memcpy(&now, st.pouch + kStats[i].offset, 4);
+        if (have) now = PouchS32(st, kStats[i].offset);
         ImGui::SetNextItemWidth(120.0f);
         ImT::InputInt(Tr(kStats[i].name), &values[i], 1, 10);
         ImGui::SameLine();
@@ -2066,7 +2080,7 @@ void DrawInventoryMenu() {
     SpmMapSweep::RequestState();
     SpmMapSweep::DebugState st;
     if (!SpmMapSweep::GetState(st)) { ImT::TextDisabled("%s", Tr("Not in a map.")); return; }
-    auto s16 = [&](int offset) { int16_t v; std::memcpy(&v, st.pouch + offset, 2); return int(v); };
+    auto s16 = [&](int offset) { return PouchS16(st, offset); };
     ImT::TextDisabled("%s", Tr("Click an entry to remove it. Add items from the Items menu."));
     if (ImGui::CollapsingHeader(Tr("Key items"), ImGuiTreeNodeFlags_DefaultOpen)) {
         for (int i = 0; i < 32; ++i) {
@@ -2085,13 +2099,28 @@ void DrawInventoryMenu() {
         }
     }
     if (ImGui::CollapsingHeader(Tr("Characters and Pixls"), ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImT::TextDisabled("%s", Tr("The character you play can't be removed."));
+        bool tippi = st.tippi;
+        if (ImT::Checkbox(DebugItemLabel(220), &tippi)) SpmMapSweep::SetTippi(tippi);
+        if (ImT::Button(Tr("Remove all Pixls"))) {   // Tippi stays; the Pixl in use goes last
+            int inUse = 0;
+            for (int i = 0; i < 16; ++i) {
+                const int id = PouchS16(st, 0xC4 + 4 * i + 2);
+                if (id == 0 || id == 220) continue;
+                if (id == st.curPixl) inUse = id;
+                else SpmMapSweep::RemoveCharOrPixl(id);
+            }
+            if (inUse) SpmMapSweep::RemoveCharOrPixl(inUse);
+        }
         for (int i = 0; i < 20; ++i) {
             const int offset = 0xB4 + 4 * i;
             const int id = s16(offset + 2);
             if (!id) continue;
             char label[96];
-            std::snprintf(label, sizeof label, "%d  %s%s##c%d", id, DebugItemLabel(id), st.pouch[offset] ? Tr("  [selectable]") : "", i);
-            if (ImT::MenuItem(label)) SpmMapSweep::RemoveItem(id);
+            const bool inUse = id == st.curChar || id == st.curPixl;
+            std::snprintf(label, sizeof label, "%d  %s%s%s##c%d", id, DebugItemLabel(id), st.pouch[offset] ? Tr("  [selectable]") : "",
+                          inUse ? Tr("  [in use]") : "", i);
+            if (ImT::MenuItem(label) && id != st.curChar) SpmMapSweep::RemoveCharOrPixl(id);
         }
     }
 }
@@ -2370,9 +2399,15 @@ void DrawMainWindow() {
     ImGui::SameLine();
     ImGui::SetNextItemWidth(220.0f);
     ImT::InputTextWithHint("##search", Tr("Search..."), search, sizeof search);
+    const float titleWidth = ImGui::CalcTextSize(Tr("Title screen")).x + ImGui::GetStyle().FramePadding.x * 2.0f;
     const float closeWidth = ImGui::CalcTextSize(Tr("Close (F10)")).x + ImGui::GetStyle().FramePadding.x * 2.0f;
     const float exitWidth = ImGui::CalcTextSize(Tr("Exit")).x + ImGui::GetStyle().FramePadding.x * 2.0f;
-    ImGui::SameLine(ImGui::GetWindowWidth() - closeWidth - exitWidth - ImGui::GetStyle().ItemSpacing.x * 2.0f - 8.0f);
+    ImGui::SameLine(ImGui::GetWindowWidth() - titleWidth - closeWidth - exitWidth - ImGui::GetStyle().ItemSpacing.x * 3.0f - 8.0f);
+    if (ImT::Button(Tr("Title screen"))) {   // back to the title screen (from a map), menu closed
+        SpmMapSweep::ReturnToTitle();
+        SetTopBarVisible(false);
+    }
+    ImGui::SameLine();
     if (ImT::Button(Tr("Close (F10)"))) SetTopBarVisible(false);
     ImGui::SameLine();
     if (ImT::Button(Tr("Exit"))) g_exitPromptOpen = true;

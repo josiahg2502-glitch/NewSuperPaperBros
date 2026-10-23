@@ -7,6 +7,7 @@ extern "C" int g_spmSweepDump;
 #include "ppc_runtime.h"
 #include "runtime_log.h"
 
+#include <tuple>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -588,10 +589,96 @@ void AddItem(int itemId) {
 void RemoveItem(int itemId) {
     Enqueue([=](CpuContext* cpu) { CallGuest(cpu, 0x8014D458, uint32_t(itemId)); });                          // pouchRemoveItem
 }
+// Tippi (220) lives in the Pixl list but is not a Pixl: the game keeps her in the first slot and its Pixl menu skips
+// that slot. Unlocked out of order, she showed up in the Pixl menu and selecting her crashed (mot_fairy_other.c).
+// So the first slot holds Tippi or nothing: Tippi moves there, and a Pixl that landed there (Tippi removed) moves out.
+static void KeepTippiFirst(uint32_t pouch) {
+    const uint32_t base = pouch + 0xC4;
+    auto id = [&](uint32_t i) { return int16_t(Memory::Read16(base + 4 * i + 2)); };
+    for (uint32_t i = 1; i < 16; ++i) {
+        if (id(i) != 220) continue;
+        const uint32_t tippi = Memory::Read32(base + 4 * i);
+        for (uint32_t j = i; j > 0; --j) Memory::Write32(base + 4 * j, Memory::Read32(base + 4 * (j - 1)));
+        Memory::Write32(base, tippi);
+        return;
+    }
+    if (id(0) == 0 || id(0) == 220) return;
+    for (uint32_t i = 1; i < 16; ++i) {
+        if (id(i) != 0) continue;
+        Memory::Write32(base + 4 * i, Memory::Read32(base));
+        Memory::Write32(base, 0);
+        return;
+    }
+}
+// Tippi is the game's "guide", not a Pixl slot: guideWork.flag0 bit 0x80 (GUIDE_FLAG0_DISABLE, spm-decomp guide.h)
+// turns her off. Saving copies that bit into GSWF 403, which is why clearing 403 alone was undone by the next save.
+static void SetTippiEnabled(CpuContext* cpu, bool enabled) {
+    const uint32_t guide = CallGuest(cpu, 0x8011EFD0, 0);                                                    // guideGetWork
+    if (!Memory::Contains(guide, 2)) return;
+    const uint16_t flag0 = Memory::Read16(guide);
+    Memory::Write16(guide, enabled ? uint16_t(flag0 & ~0x80u) : uint16_t(flag0 | 0x80u));
+}
+void SetTippi(bool enabled) {
+    if (enabled) {
+        Unlock(220, true);
+        return;
+    }
+    RemoveCharOrPixl(220);
+    Enqueue([](CpuContext* cpu) { SetTippiEnabled(cpu, false); });   // also when her slot was already gone
+}
+void ReturnToTitle() {
+    Enqueue([](CpuContext* cpu) {
+        uint32_t now = 0, after = 0;
+        if (!Memory::TryRead32(kNowSeq, now) || !Memory::TryRead32(kNextSeq, after) || now != 2 || after != 2) return;
+        CpuContext call = *cpu;
+        call.gpr[3] = 1;  // seqSetSeq(SEQ_TITLE, nullptr, nullptr): the game over "quit" path
+        call.gpr[4] = 0;
+        call.gpr[5] = 0;
+        InvokeIndirectCpu(0x8017B3C8, &call);
+    });
+}
+void RemoveCharOrPixl(int itemId) {
+    // The game has no remove for these slots (pouchRemoveItem only handles item lists): make it not selectable with
+    // the game's own call, then empty the slot (Pixls after it move up). The character played is left alone; the Pixl
+    // in use hands over to another Pixl first.
+    Enqueue([=](CpuContext* cpu) {
+        const uint32_t pouch = CallGuest(cpu, 0x8014B594, 0);                                                // pouchGetPtr
+        const uint32_t mw = CallGuest(cpu, 0x801214EC, 0);                                                  // marioGetPtr
+        if (!Memory::Contains(pouch, 0x104) || !Memory::Contains(mw, 0x40)) return;
+        if (itemId == 216 + int8_t(Memory::Read8(mw + 0x38))) return;                                        // the character played
+        if (itemId == int(CallGuest(cpu, 0x8014E828, 0))) {                                                  // pouchGetCurPixl
+            for (uint32_t i = 1; i < 16; ++i) {   // hand over to another Pixl first, if there is one
+                const int other = int16_t(Memory::Read16(pouch + 0xC4 + 4 * i + 2));
+                if (other != 0 && other != 220 && other != itemId) {
+                    CallGuest(cpu, 0x8014E914, uint32_t(other));                                             // pouchSetPixlSelected
+                    break;
+                }
+            }
+        }
+        for (const auto [base, count, pixl] : {std::tuple{0xB4u, 4u, false}, std::tuple{0xC4u, 16u, true}}) {
+            for (uint32_t i = 0; i < count; ++i) {
+                const uint32_t slot = pouch + base + 4 * i;
+                if (int16_t(Memory::Read16(slot + 2)) != itemId) continue;
+                CallGuest(cpu, pixl ? 0x8014E660u : 0x8014E524u, uint32_t(itemId));                          // pouchMake{Pixl,Char}NotSelectable
+                if (itemId == 220) SetTippiEnabled(cpu, false);
+                if (!pixl || i == 0) {   // a character keeps its slot index; Tippi's slot stays first; both left empty
+                    Memory::Write32(slot, 0);
+                    return;
+                }
+                for (uint32_t j = i; j + 1 < count; ++j) Memory::Write32(pouch + base + 4 * j, Memory::Read32(pouch + base + 4 * (j + 1)));
+                Memory::Write32(pouch + base + 4 * (count - 1), 0);
+                return;
+            }
+        }
+    });
+}
 void Unlock(int itemId, bool pixl) {
     Enqueue([=](CpuContext* cpu) {
         CallGuest(cpu, 0x8014CB04, uint32_t(itemId));                                                         // pouchAddItem
         CallGuest(cpu, pixl ? 0x8014E5A4u : 0x8014E4BCu, uint32_t(itemId));                                   // pouchMake{Pixl,Char}Selectable
+        const uint32_t pouch = CallGuest(cpu, 0x8014B594, 0);                                                // pouchGetPtr
+        if (pixl && Memory::Contains(pouch, 0x104)) KeepTippiFirst(pouch);
+        if (itemId == 220) SetTippiEnabled(cpu, true);
     });
 }
 void AddCoins(int amount) {
@@ -645,7 +732,11 @@ void RequestState() {
         if (Memory::Contains(mw, 0x320)) {
             for (int i = 0; i < 3; ++i) st.pos[i] = Memory::ReadFloat32(mw + 0x5C + 4 * i);
             st.held = Memory::Read16(mw + 0x30C);
+            st.curChar = 216 + int8_t(Memory::Read8(mw + 0x38));                    // marioWork.character
         }
+        st.curPixl = int(CallGuest(cpu, 0x8014E828, 0));                        // pouchGetCurPixl
+        const uint32_t guide = CallGuest(cpu, 0x8011EFD0, 0);                   // guideGetWork
+        st.tippi = Memory::Contains(guide, 2) && !(Memory::Read16(guide) & 0x80u);
         const uint32_t pouch = CallGuest(cpu, 0x8014B594, 0);                  // pouchGetPtr
         if (Memory::Contains(pouch, sizeof st.pouch))
             for (uint32_t i = 0; i < sizeof st.pouch; ++i) st.pouch[i] = Memory::Read8(pouch + i);

@@ -13,6 +13,9 @@ void RequestWarp(const char* map, const char* door);
 // function (pouchAddItem, swSet, ...) so the game's state stays consistent.
 void AddItem(int itemId);
 void RemoveItem(int itemId);
+void SetTippi(bool enabled);          // Tippi slot + guide on/off
+void ReturnToTitle();                 // back to the title screen (from a map only)
+void RemoveCharOrPixl(int itemId);   // character / Pixl slot; not the character played or the Pixl in use
 void Unlock(int itemId, bool pixl);   // add the character / Pixl item, then make it selectable
 void AddCoins(int amount);
 void SetHp(int hp, int maxHp);
@@ -29,6 +32,9 @@ struct DebugState {
     char map[32] = {};
     float pos[3] = {};
     uint16_t held = 0;
+    int curChar = -1;            // item id of the character played (216 Mario .. 219 Luigi)
+    int curPixl = -1;            // item id of the Pixl in use
+    bool tippi = false;          // Tippi (the guide) enabled
     uint8_t pouch[0x6A0] = {};   // MarioPouchWork (spm-docs mario_pouch.h)
 };
 void RequestState();
