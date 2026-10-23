@@ -620,29 +620,9 @@ void AddItem(int itemId) {
 void RemoveItem(int itemId) {
     Enqueue([=](CpuContext* cpu) { CallGuest(cpu, 0x8014D458, uint32_t(itemId)); });                          // pouchRemoveItem
 }
-// Tippi (220) lives in the Pixl list but is not a Pixl: the game keeps her in the first slot and its Pixl menu skips
-// that slot. Unlocked out of order, she showed up in the Pixl menu and selecting her crashed (mot_fairy_other.c).
-// So the first slot holds Tippi or nothing: Tippi moves there, and a Pixl that landed there (Tippi removed) moves out.
-static void KeepTippiFirst(uint32_t pouch) {
-    const uint32_t base = pouch + 0xC4;
-    auto id = [&](uint32_t i) { return int16_t(Memory::Read16(base + 4 * i + 2)); };
-    for (uint32_t i = 1; i < 16; ++i) {
-        if (id(i) != 220) continue;
-        const uint32_t tippi = Memory::Read32(base + 4 * i);
-        for (uint32_t j = i; j > 0; --j) Memory::Write32(base + 4 * j, Memory::Read32(base + 4 * (j - 1)));
-        Memory::Write32(base, tippi);
-        return;
-    }
-    if (id(0) == 0 || id(0) == 220) return;
-    for (uint32_t i = 1; i < 16; ++i) {
-        if (id(i) != 0) continue;
-        Memory::Write32(base + 4 * i, Memory::Read32(base));
-        Memory::Write32(base, 0);
-        return;
-    }
-}
-// Tippi is the game's "guide", not a Pixl slot: guideWork.flag0 bit 0x80 (GUIDE_FLAG0_DISABLE, spm-decomp guide.h)
-// turns her off. Saving copies that bit into GSWF 403, which is why clearing 403 alone was undone by the next save.
+// Tippi is the game's "guide", not a pouch item: the open-world mod only switches her on, it never adds item 220, and
+// she is not in the game's Pixl menu. As a pouch Pixl she showed up there and selecting her crashed (mot_fairy_other.c).
+// guideWork.flag0 bit 0x80 (GUIDE_FLAG0_DISABLE, spm-decomp guide.h) turns her off; saving copies it into GSWF 403.
 static void SetTippiEnabled(CpuContext* cpu, bool enabled) {
     const uint32_t guide = CallGuest(cpu, 0x8011EFD0, 0);                                                    // guideGetWork
     if (!Memory::Contains(guide, 2)) return;
@@ -650,12 +630,19 @@ static void SetTippiEnabled(CpuContext* cpu, bool enabled) {
     Memory::Write16(guide, enabled ? uint16_t(flag0 & ~0x80u) : uint16_t(flag0 | 0x80u));
 }
 void SetTippi(bool enabled) {
-    if (enabled) {
-        Unlock(220, true);
-        return;
-    }
-    RemoveCharOrPixl(220);
-    Enqueue([](CpuContext* cpu) { SetTippiEnabled(cpu, false); });   // also when her slot was already gone
+    Enqueue([=](CpuContext* cpu) {
+        SetTippiEnabled(cpu, enabled);
+        // An item 220 left by an earlier version of this menu: take it out of the Pixl list (slot emptied, rest moved up).
+        const uint32_t pouch = CallGuest(cpu, 0x8014B594, 0);                                                // pouchGetPtr
+        if (!Memory::Contains(pouch, 0x104)) return;
+        const uint32_t base = pouch + 0xC4;
+        for (uint32_t i = 0; i < 16; ++i) {
+            if (int16_t(Memory::Read16(base + 4 * i + 2)) != 220) continue;
+            for (uint32_t j = i; j + 1 < 16; ++j) Memory::Write32(base + 4 * j, Memory::Read32(base + 4 * (j + 1)));
+            Memory::Write32(base + 4 * 15, 0);
+            break;
+        }
+    });
 }
 void ReturnToTitle() {
     Enqueue([](CpuContext* cpu) {
@@ -692,7 +679,7 @@ void RemoveCharOrPixl(int itemId) {
                 if (int16_t(Memory::Read16(slot + 2)) != itemId) continue;
                 CallGuest(cpu, pixl ? 0x8014E660u : 0x8014E524u, uint32_t(itemId));                          // pouchMake{Pixl,Char}NotSelectable
                 if (itemId == 220) SetTippiEnabled(cpu, false);
-                if (!pixl || i == 0) {   // a character keeps its slot index; Tippi's slot stays first; both left empty
+                if (!pixl) {   // a character keeps its slot index: the slot is just emptied
                     Memory::Write32(slot, 0);
                     return;
                 }
@@ -704,12 +691,13 @@ void RemoveCharOrPixl(int itemId) {
     });
 }
 void Unlock(int itemId, bool pixl) {
+    if (itemId == 220) {   // Tippi: the guide, not a pouch Pixl
+        SetTippi(true);
+        return;
+    }
     Enqueue([=](CpuContext* cpu) {
         CallGuest(cpu, 0x8014CB04, uint32_t(itemId));                                                         // pouchAddItem
         CallGuest(cpu, pixl ? 0x8014E5A4u : 0x8014E4BCu, uint32_t(itemId));                                   // pouchMake{Pixl,Char}Selectable
-        const uint32_t pouch = CallGuest(cpu, 0x8014B594, 0);                                                // pouchGetPtr
-        if (pixl && Memory::Contains(pouch, 0x104)) KeepTippiFirst(pouch);
-        if (itemId == 220) SetTippiEnabled(cpu, true);
     });
 }
 void AddCoins(int amount) {
@@ -877,6 +865,9 @@ void SavePosition() {
         for (int i = 0; i < 3; ++i) g_savedPos[i] = Memory::ReadFloat32(mw + 0x5C + 4 * i);
         g_hasSavedPos = true;
     });
+}
+void SetGravity(int dir) {
+    Enqueue([=](CpuContext* cpu) { CallGuest(cpu, 0x8012AA90, uint32_t(dir)); });                           // marioSetGravity
 }
 void TeleportTo(float x, float y, float z) {
     Enqueue([=](CpuContext* cpu) {

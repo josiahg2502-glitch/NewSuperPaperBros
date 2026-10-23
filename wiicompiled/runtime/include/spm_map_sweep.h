@@ -57,6 +57,7 @@ bool FlagValue(int flag);
 void SavePosition();     // remember Mario's x y z
 void LoadPosition();     // put Mario back there
 void TeleportTo(float x, float y, float z);
+void SetGravity(int dir);   // 0 down, 1 up, 2 left, 3 right (marioSetGravity: the upside-down rooms of 4-4)
 bool HasSavedPosition();
 void Heal();             // HP = max HP
 }

@@ -166,6 +166,11 @@ constexpr DebugText kDebugText[] = {
     {{"Load position", "Position laden", "Charger la position", "Cargar posición", "Carica posizione"}},
     {{"Arrive at X Y Z", "Ankunft bei X Y Z", "Arriver en X Y Z", "Llegar a X Y Z", "Arriva a X Y Z"}},
     {{"Teleport", "Teleportieren", "Téléporter", "Teletransportar", "Teletrasporta"}},
+    {{"Gravity:", "Schwerkraft:", "Gravité :", "Gravedad:", "Gravità:"}},
+    {{"Down", "Unten", "Bas", "Abajo", "Giù"}},
+    {{"Up (upside down)", "Oben (kopfüber)", "Haut (à l'envers)", "Arriba (al revés)", "Su (capovolto)"}},
+    {{"Left", "Links", "Gauche", "Izquierda", "Sinistra"}},
+    {{"Right", "Rechts", "Droite", "Derecha", "Destra"}},
     {{"Position: %.0f  %.0f  %.0f", "Position: %.0f  %.0f  %.0f", "Position : %.0f  %.0f  %.0f", "Posición: %.0f  %.0f  %.0f", "Posizione: %.0f  %.0f  %.0f"}},
     {{"Exit", "Beenden", "Quitter", "Salir", "Esci"}},
     {{"Close (F10)", "Schließen (F10)", "Fermer (F10)", "Cerrar (F10)", "Chiudi (F10)"}},
@@ -1991,7 +1996,9 @@ void DrawStoryMenu() {
     ImGui::SetNextItemWidth(160.0f);
     ImT::InputInt("##story", &story);
     ImGui::SameLine();
+    ImGui::PushID("story");   // several "Set"/"Read" buttons share this page: give each its own ID
     if (ImT::Button(Tr("Set"))) SpmMapSweep::SetGsw(0, story);
+    ImGui::PopID();
     if (ImT::Button("-1")) SpmMapSweep::SetGsw(0, SpmMapSweep::Gsw0() - 1);
     ImGui::SameLine();
     if (ImT::Button("+1")) SpmMapSweep::SetGsw(0, SpmMapSweep::Gsw0() + 1);
@@ -2008,11 +2015,15 @@ void DrawFlagsMenu() {
     static int flag = 0;
     ImGui::SetNextItemWidth(140.0f);
     ImT::InputInt(Tr("Flag (GSWF)"), &flag);
+    ImGui::PushID("flag");
     if (ImT::Button(Tr("Set"))) SpmMapSweep::SetSystemFlag(flag, true);
+    ImGui::PopID();
     ImGui::SameLine();
     if (ImT::Button(Tr("Clear"))) SpmMapSweep::SetSystemFlag(flag, false);
     ImGui::SameLine();
+    ImGui::PushID("flag");
     if (ImT::Button(Tr("Read"))) SpmMapSweep::ReadSystemFlag(flag);
+    ImGui::PopID();
     ImT::TextDisabled(Tr("Last read: %d"), SpmMapSweep::LastResult());
 }
 
@@ -2144,9 +2155,13 @@ void DrawVariablesMenu() {
     ImT::InputInt(Tr("Number"), &index);
     ImGui::SetNextItemWidth(140.0f);
     ImT::InputInt(Tr("Value"), &value);
+    ImGui::PushID("var");
     if (ImT::Button(Tr("Read"))) SpmMapSweep::ReadVar(type, index);
+    ImGui::PopID();
     ImGui::SameLine();
+    ImGui::PushID("var");
     if (ImT::Button(Tr("Set"))) SpmMapSweep::SetVar(type, index, value);
+    ImGui::PopID();
     ImT::TextDisabled(Tr("Last read: %d"), SpmMapSweep::LastResult());
 }
 
@@ -2305,6 +2320,12 @@ void DrawQuickPage() {
         ImGui::InputFloat3("##teleport", target, "%.0f");
         ImGui::SameLine();
         if (ImT::Button(Tr("Teleport"))) SpmMapSweep::TeleportTo(target[0], target[1], target[2]);
+        ImT::TextUnformatted(Tr("Gravity:"));
+        static const char* const kGravity[] = {"Down", "Up (upside down)", "Left", "Right"};
+        for (int dir = 0; dir < 4; ++dir) {
+            ImGui::SameLine();
+            if (ImT::Button(Tr(kGravity[dir]))) SpmMapSweep::SetGravity(dir);
+        }
     }
     ImGui::Separator();
     DrawPlayerMenu();
