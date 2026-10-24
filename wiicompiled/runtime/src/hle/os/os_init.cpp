@@ -1,3 +1,4 @@
+#include "frontend/runtime_mode.h"
 // Boot/init hooks, OSFatal, and assorted hardware-init stubs.
 
 #include <algorithm>
@@ -79,6 +80,7 @@ extern "C" void OSFatal_HLE_801a4ec4(CpuContext* ctx) {
         guestMessage.empty() ? std::string("OS::Fatal was called without a message.") : guestMessage;
     // MarkFatalErrorReported below suppresses the atexit reporter, so this path
     // has to write its own artifacts or the run folder gets nothing.
+    if (RuntimeFrontend::Active()) RuntimeFrontend::Fail(details.c_str());
     RuntimeCrash::WriteCrashArtifacts("osfatal", details);
     SetRuntimeExitCode(EXIT_FAILURE);
     ShowRuntimeFatalPopup("the guest operating system reported a fatal error", details);

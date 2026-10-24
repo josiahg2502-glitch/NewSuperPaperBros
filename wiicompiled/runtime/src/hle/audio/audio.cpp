@@ -711,3 +711,14 @@ void Audio_HLE_PollDeferred()
     }
     OS_HLE_EndDeferredGuestCallbacks();
 }
+
+void AI_HLE_ResetFrontend() {
+    AxDspHle::Stop();
+    std::lock_guard lock(g_ai.mutex);
+    g_ai.startAddr = g_ai.registerStartAddr = g_ai.length = g_ai.callback = g_ai.bytesLeft = 0;
+    g_ai.enabled = g_ai.tickActive = false;
+    g_ai.sampleRate = kDefaultSampleRate;
+    g_ai.accumulatorSeconds = 0;
+    g_ai.detBlockDueTicks = 0;
+    g_ai.loggedBackendFailure = g_ai.loggedMissingCallback = g_ai.loggedAccessFailure = false;
+}

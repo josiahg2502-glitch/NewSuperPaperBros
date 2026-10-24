@@ -1,4 +1,11 @@
 #include "platform/host_platform.h"
+#include <algorithm>
+#include <fstream>
+#include <string>
+#if defined(__linux__)
+#include <sched.h>
+#include <unistd.h>
+#endif
 
 #include <cstdlib>
 
@@ -18,8 +25,18 @@
 #endif
 
 namespace RuntimePlatform {
+namespace {
+std::optional<std::filesystem::path> frontendData, frontendResources;
+}
+void SetFrontendDirectories(std::filesystem::path data, std::filesystem::path resources) {
+    frontendData = std::move(data); frontendResources = std::move(resources);
+}
+void ClearFrontendDirectories() { frontendData.reset(); frontendResources.reset(); }
+std::optional<std::filesystem::path> FrontendDataDirectory() { return frontendData; }
+
 
 std::optional<std::filesystem::path> ExecutableDirectory() noexcept {
+    if (frontendResources) return frontendResources;
 #if defined(_WIN32)
     std::wstring buffer(MAX_PATH, L'\0');
     for (;;) {
@@ -60,6 +77,7 @@ std::optional<std::filesystem::path> ExecutableDirectory() noexcept {
 }
 
 std::filesystem::path ApplicationDataDirectory(std::string_view applicationName) {
+    if (frontendData) return *frontendData;
 #if defined(_WIN32)
     PWSTR rawPath = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &rawPath)) && rawPath) {
@@ -94,6 +112,31 @@ uint64_t CurrentProcessId() noexcept {
     return static_cast<uint64_t>(::GetCurrentProcessId());
 #else
     return static_cast<uint64_t>(::getpid());
+#endif
+}
+
+std::string PinCurrentThreadToFastCores() {
+#if defined(__linux__)
+    long frequency[CPU_SETSIZE] = {};
+    long lowest = 0, highest = 0;
+    const int count = std::min<int>(static_cast<int>(sysconf(_SC_NPROCESSORS_CONF)), CPU_SETSIZE);
+    for (int cpu = 0; cpu < count; ++cpu) {
+        std::ifstream in("/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/cpufreq/cpuinfo_max_freq");
+        if (!(in >> frequency[cpu])) frequency[cpu] = 0;
+        if (frequency[cpu] && (!lowest || frequency[cpu] < lowest)) lowest = frequency[cpu];
+        highest = std::max(highest, frequency[cpu]);
+    }
+    if (!lowest || lowest == highest) return {};  // one cluster: nothing to avoid
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    std::string list;
+    for (int cpu = 0; cpu < count; ++cpu)
+        if (frequency[cpu] > lowest) { CPU_SET(cpu, &set); list += (list.empty() ? "" : ",") + std::to_string(cpu); }
+    const bool pinned = sched_setaffinity(0, sizeof(set), &set) == 0;
+    return std::string(pinned ? "pinned" : "pin failed") + ": cpus " + list + " (max " + std::to_string(highest) +
+           " kHz, avoided " + std::to_string(lowest) + " kHz)";
+#else
+    return {};
 #endif
 }
 

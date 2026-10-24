@@ -13,7 +13,7 @@
 
 // Base path for the host Wii NAND directory (resolved at runtime).
 static std::filesystem::path g_dolphinWiiBase;
-static std::once_flag g_dolphinWiiBaseOnce;
+static std::mutex g_dolphinWiiBaseMutex;
 
 // ============================================================================
 // Logging
@@ -89,9 +89,10 @@ std::string CurrentNandDataDir() {
 }
 
 const std::filesystem::path& GetNandBasePath() {
-    std::call_once(g_dolphinWiiBaseOnce, []() {
+    std::lock_guard lock(g_dolphinWiiBaseMutex);
+    if (g_dolphinWiiBase.empty()) {
         g_dolphinWiiBase = RuntimeNandPath::DiscoverNandRootPath();
-    });
+    }
 
     return g_dolphinWiiBase;
 }
@@ -479,4 +480,14 @@ NandFileExtent NandProbeFileExtent(FILE* file) {
     extent.size = std::ftell(file);
     std::fseek(file, extent.position, SEEK_SET);
     return extent;
+}
+
+void NAND_HLE_ResetFrontendFiles() {
+    std::scoped_lock lock(g_fdMutex, g_dolphinWiiBaseMutex);
+    for (auto& [fd, handle] : g_fileHandles) {
+        if (handle.file) std::fclose(handle.file);
+    }
+    g_fileHandles.clear();
+    g_nextFd = 100;
+    g_dolphinWiiBase.clear();
 }

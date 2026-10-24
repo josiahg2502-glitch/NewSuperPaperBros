@@ -1,3 +1,4 @@
+#include "frontend/runtime_mode.h"
 #include <vector>
 #include "frame_input.h"
 #include "det_hash.h"
@@ -402,6 +403,7 @@ static uint32_t SpmPresentedFramesLocal() { return s_presentedXfbFrames.load(std
 static uint32_t (*const g_spmFramesFn)() = &SpmPresentedFramesLocal;
 
 void StartStallWatchdogOnce() {
+    if (RuntimeFrontend::Active()) return;
     static std::once_flag once;
     std::call_once(once, [] {
         // Unattended bring-up: autoexit.txt beside the executable holds a run length in seconds.
@@ -565,7 +567,9 @@ void AdvanceRetrace(CpuContext* ctx, Clock::time_point retraceStamp, bool servic
     // frame left it, then latch every channel's input for the new one before any guest code reads it.
     if (DetClock::Enabled()) {
         DetHash::OnRetrace(retraceValue);
-        FrameInput::Latch(retraceValue);
+        // A libretro frontend latches when it resumes the guest with that frame's input instead
+        // (AdvanceOneFrame); latching here would hand the game the previous frame's buttons.
+        if (!RuntimeFrontend::Active()) FrameInput::Latch(retraceValue);
     }
 
     // Wake up threads sleeping on the VI retrace queue (VIWaitForRetrace).
@@ -627,7 +631,7 @@ void AdvanceRetrace(CpuContext* ctx, Clock::time_point retraceStamp, bool servic
         const bool shouldSubmit = frameActive && (shouldPresentXfb || shouldPresentBlack);
 
         if (shouldSubmit) {
-            if (!isBlack || settings_overlay::StartupScreenVisible()) {
+            if (!RuntimeFrontend::Active() && (!isBlack || settings_overlay::StartupScreenVisible())) {
                 // Normal presentation: draw overlay on top of GX content
                 settings_overlay::Draw();
             }
@@ -643,6 +647,9 @@ void AdvanceRetrace(CpuContext* ctx, Clock::time_point retraceStamp, bool servic
 
     // Clear re-entry guard
     s_inAdvanceRetrace.store(false);
+    // A libretro frontend's frame ends here; the scheduler's idle loop suspends right after its
+    // idle step (RuntimeFrontend::SuspendIfRequested), a resume point a save state can rebuild.
+    RuntimeFrontend::RequestSuspendAtVI();
 }
 
 bool AdvanceDueRetraces(CpuContext* ctx, int maxToProcess, bool serviceAurora)
@@ -664,6 +671,7 @@ bool AdvanceDueRetraces(CpuContext* ctx, int maxToProcess, bool serviceAurora)
             }
             AdvanceRetrace(ctx, Clock::now(), serviceAurora);
             advancedAny = true;
+            if (RuntimeFrontend::SuspendRequested()) break;  // one retrace per libretro frame
         }
         return advancedAny;
     }
@@ -837,6 +845,14 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     if (s_presentSequenceActive.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
+    // Frontend frame timing: encode/submit cost, reported apart from guest CPU time.
+    struct PresentTimer {
+        Clock::time_point start = Clock::now();
+        ~PresentTimer() {
+            if (RuntimeFrontend::Active())
+                RuntimeFrontend::AddPresentTime(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count());
+        }
+    } presentTimer;
     GuestProfiler::OnFramePresented();
     static FrameTimes times;
     const Clock::time_point presentStart = Clock::now();
@@ -891,7 +907,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     bool paceThisFrame = false;
     // Deterministic mode paces in the scheduler's idle wait instead, and must not deliver the
     // retrace from here (PaceToRetraceBoundary does), so frames present as soon as they are sealed.
-    if (DetClock::Enabled()) {
+    if (DetClock::Enabled() || RuntimeFrontend::Active()) {
         paceToRetrace = false;
     }
     if (paceToRetrace) {
@@ -1036,7 +1052,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             times.lastPresentEnd = now;
         }
     }
-    settings_overlay::AdvancePresentedFrame();
+    if (!RuntimeFrontend::Active()) settings_overlay::AdvancePresentedFrame();
     g_auroraFrameActive.store(false, std::memory_order_release);
     g_auroraFrameHadWork.store(false, std::memory_order_release);
     if (presentedXfb) {
@@ -1384,7 +1400,7 @@ extern "C" void VIWaitForRetrace_HLE_801b99ec(CpuContext* ctx)
             {
                 std::lock_guard<std::mutex> lock(g_viMutex);
                 EnsureInitializedLocked();
-                if (g_vi.retraceCount != retraceCount) {
+                if (g_vi.retraceCount - retraceCount >= RuntimeFrontend::FrameStep()) {
                     break;
                 }
             }
@@ -1418,3 +1434,16 @@ PPC_NATIVE_OVERRIDE(8028211C, VIGetScanMode_HLE, uint32_t, (), ());
 
 
 uint32_t SpmPresentedFrames() { return g_spmFramesFn(); }
+
+// Called only after guest producers stop, before the next content session starts.
+void VI_HLE_ResetFrontend() {
+    std::lock_guard lock(g_viMutex);
+    g_vi = ViState{};
+    g_auroraFrameActive = false;
+    g_auroraFrameHadWork = false;
+    s_inAdvanceRetrace = false;
+    s_presentSequenceActive = false;
+    s_presentedXfbFrames = 0;
+    s_lastPacedRetraceCount = ~0u;
+    s_lastPresentAnchorNanos = 0;
+}

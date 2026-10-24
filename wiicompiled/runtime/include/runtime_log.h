@@ -7,6 +7,7 @@
 #include <iostream>
 
 #include "memory.h"
+#include "frontend/runtime_mode.h"
 
 // Canonical module tags. Use one of these; never write a bare "[...]" prefix
 // into a message. (A message whose text spans several output lines repeats the
@@ -30,7 +31,10 @@
 
 // printf form:  RT_LOGF(RT_TAG_GX, "invalid GXTexObj @0x%08X\n", addr);
 // `tag` and the format string must both be literals; they are concatenated.
-#define RT_LOGF(tag, ...) std::fprintf(stderr, "[" tag "] " __VA_ARGS__)
+#define RT_LOGF(tag, ...) do { \
+    if (RuntimeFrontend::Active()) RuntimeFrontend::Printf("[" tag "] " __VA_ARGS__); \
+    else std::fprintf(stderr, "[" tag "] " __VA_ARGS__); \
+} while (false)
 
 // Shared epilogue for the `catch (const Memory::AccessViolation& e)` handlers
 // spread across the HLE. `who` is the guest function or operation that faulted;

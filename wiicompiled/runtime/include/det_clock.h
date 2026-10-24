@@ -26,6 +26,7 @@ extern bool g_enabled;
 inline bool Enabled() noexcept { return detail::g_enabled; }
 // Turns the mode on. Must happen before the guest starts.
 void Enable() noexcept;
+void Reset() noexcept;
 
 // Virtual time-base ticks since boot (60.75 MHz).
 uint64_t Now() noexcept;

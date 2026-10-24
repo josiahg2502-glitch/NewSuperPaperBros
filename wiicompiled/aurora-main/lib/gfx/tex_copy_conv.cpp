@@ -427,6 +427,8 @@ static wgpu::RenderPipeline create_pipeline(const ConvPipeline& conv, const std:
 bool needs_conversion(const GXTexFmt fmt) { return g_pipelines.contains(fmt); }
 
 void initialize() {
+  // The UV transform is bound with a dynamic offset, as GX draws bind theirs. Adreno 5xx read a
+  // statically offset uniform binding here as zeros once frames grew (all UVs 0, single-colour XFB).
   static constexpr std::array bindGroupLayoutEntries{
       wgpu::BindGroupLayoutEntry{
           .binding = 0,
@@ -451,6 +453,7 @@ void initialize() {
           .buffer =
               wgpu::BufferBindingLayout{
                   .type = wgpu::BufferBindingType::Uniform,
+                  .hasDynamicOffset = true,
               },
       },
   };
@@ -477,6 +480,7 @@ void initialize() {
           .buffer =
               wgpu::BufferBindingLayout{
                   .type = wgpu::BufferBindingType::Uniform,
+                  .hasDynamicOffset = true,
               },
       },
   };
@@ -541,7 +545,7 @@ static void execute(const wgpu::CommandEncoder& cmd, const ConvRequest& req, con
         wgpu::BindGroupEntry{
             .binding = 1,
             .buffer = g_uniformBuffer,
-            .offset = req.uniformRange.offset,
+            .offset = 0,
             .size = req.uniformRange.size,
         },
     };
@@ -565,7 +569,7 @@ static void execute(const wgpu::CommandEncoder& cmd, const ConvRequest& req, con
         wgpu::BindGroupEntry{
             .binding = 2,
             .buffer = g_uniformBuffer,
-            .offset = req.uniformRange.offset,
+            .offset = 0,
             .size = req.uniformRange.size,
         },
     };
@@ -592,7 +596,8 @@ static void execute(const wgpu::CommandEncoder& cmd, const ConvRequest& req, con
   };
   const auto pass = cmd.BeginRenderPass(&renderPassDescriptor);
   pass.SetPipeline(pipeline);
-  pass.SetBindGroup(0, bindGroup);
+  const uint32_t dynamicOffset = static_cast<uint32_t>(req.uniformRange.offset);
+  pass.SetBindGroup(0, bindGroup, 1, &dynamicOffset);
   pass.Draw(3);
   pass.End();
 }

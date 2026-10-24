@@ -407,6 +407,7 @@ target_include_directories(mkw_runtime_config_tests PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/include"
     "${CMAKE_CURRENT_LIST_DIR}/third_party/toml11")
 target_compile_features(mkw_runtime_config_tests PRIVATE cxx_std_20)
+target_link_libraries(mkw_runtime_config_tests PRIVATE mkw_platform)
 add_test(NAME mkw_runtime_config_tests COMMAND mkw_runtime_config_tests)
 
 add_executable(mkw_nand_save_tests "${CMAKE_CURRENT_LIST_DIR}/tests/nand_save_tests.cpp")

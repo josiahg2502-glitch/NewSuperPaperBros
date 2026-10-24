@@ -56,6 +56,8 @@ public:
     
     // Shutdown the fiber system
     static void Shutdown();
+    // Unwind suspended guest stacks while frontend cancellation is active.
+    static void CancelFrontendFibers();
     
     // Check if fiber system is initialized
     static bool IsInitialized();

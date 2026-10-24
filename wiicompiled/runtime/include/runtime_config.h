@@ -328,6 +328,7 @@ inline void AdoptEarlierUserData(const std::filesystem::path& target) {
 #endif
 
 inline std::filesystem::path ApplicationDataDirectory() {
+    if (auto frontend = RuntimePlatform::FrontendDataDirectory()) return *frontend;
     if (const auto& portableRoot = PortableRootDirectory()) {
         return *portableRoot / kPortableUserDataDirectoryName;
     }

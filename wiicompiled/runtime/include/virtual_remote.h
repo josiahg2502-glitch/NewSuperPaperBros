@@ -35,6 +35,9 @@ enum TouchButton : uint32_t {
     kTouchOne = 0x010, kTouchTwo = 0x020, kTouchA = 0x040, kTouchPlus = 0x080, kTouchMinus = 0x100,
 };
 void SetTouchState(uint32_t touchButtons, bool shake, float tilt);
+// In one of SPM's arcade minigames (maps mg*), where the left stick also tilts the remote and an
+// aimed pointer stays up.
+bool InArcade();
 // Player 1's Wii Remote buttons (WPAD bits) from keyboard, gamepads and touch, as last handed to the game.
 uint32_t LastButtons();
 

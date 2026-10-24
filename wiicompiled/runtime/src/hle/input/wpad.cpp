@@ -244,3 +244,7 @@ extern "C" uint32_t WPADSetSyncDeviceCallback_HLE(uint32_t callback)
 PPC_NATIVE_OVERRIDE(801BF640, WPADSetSyncDeviceCallback_HLE, uint32_t, (uint32_t callback), (callback));
 #endif
 #endif
+
+void WPAD_HLE_ResetFrontend() {
+    g_state = WpadStubState{};
+}

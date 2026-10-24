@@ -53,7 +53,7 @@ void WriteCrashArtifacts(std::string_view reason,
 
 // Full fatal path for a guest jump to an untranslated/invalid target:
 // stderr diagnostics, crash artifacts, popup, exit.
-[[noreturn]] void FatalMissingGuestTarget(uint32_t target, struct CpuContext* cpu) noexcept;
+[[noreturn]] void FatalMissingGuestTarget(uint32_t target, struct CpuContext* cpu);
 
 } // namespace RuntimeCrash
 

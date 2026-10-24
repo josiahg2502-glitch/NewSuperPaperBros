@@ -50,6 +50,7 @@ extern "C" void PPCHalt_8012E5A4()
                           "Super Paper Mario executed PPCHalt, which the console only reaches after an "
                           "unrecoverable error.");
     MarkFatalErrorReported();
+    if (RuntimeFrontend::Active()) RuntimeFrontend::Fail("Guest panic or halt");
     std::exit(EXIT_FAILURE);
 }
 
@@ -119,6 +120,7 @@ extern "C" void OS__Panic_801A2660_Cpu(CpuContext* ctx)
     // Give extra time for output to flush with PowerShell redirection
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     
+    if (RuntimeFrontend::Active()) RuntimeFrontend::Fail("Guest panic or halt");
     std::exit(EXIT_FAILURE);
 }
 
@@ -131,6 +133,7 @@ extern "C" uint32_t OSResetSystem()
     std::fflush(stderr);
     // The AX mix worker holds resolved host pointers into the guest regions;
     // it must be stopped before those mappings are torn down.
+    if (RuntimeFrontend::Active()) RuntimeFrontend::Fail("Guest requested reset");
     AxDspHle::ShutdownMixWorker();
     Memory::Reset();
     SetRuntimeExitCode(0);
@@ -190,6 +193,7 @@ extern "C" uint32_t Exit_801AE58C(int status)
     }
     SetRuntimeExitCode(status);
     if (status == 0) ExitForAuroraWindowClose();
+    if (RuntimeFrontend::Active()) RuntimeFrontend::Fail("Guest called exit");
     std::exit(status);
     return static_cast<uint32_t>(status);
 }

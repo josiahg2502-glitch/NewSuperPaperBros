@@ -1,4 +1,5 @@
-﻿#include "hle_stubs.h"
+#include "frontend/runtime_mode.h"
+#include "hle_stubs.h"
 #include "isa/big_endian.h"
 #include "hle/dvd_contract.h"
 #include "hle/runtime_parse_helpers.h"
@@ -53,7 +54,7 @@ namespace fs = std::filesystem;
 // root "/" and its "sys" subfolder to "/sys/". The root is user-owned input:
 // it is never embedded into or copied by the public runtime.
 static fs::path g_dvdRoot;
-static std::once_flag g_dvdRootOnce;
+static std::mutex g_dvdRootMutex;
 
 static uint32_t CurrentDiscGameCode() {
     return RuntimeHle::CurrentGameCode(0x52385045u); // SMNE (NSMBW) fallback
@@ -238,6 +239,7 @@ static bool IsDvdDataRoot(const fs::path& path) {
 // the atexit handler.
 [[noreturn]] static void FailDvd(const char* reason, const char* category,
                                  const std::string& details) {
+    if (RuntimeFrontend::Active()) RuntimeFrontend::Fail(details.c_str());
     RuntimeCrash::WriteCrashArtifacts(reason, details);
     SetRuntimeExitCode(EXIT_FAILURE);
     ShowRuntimeFatalPopup(category, details);
@@ -264,7 +266,8 @@ static bool IsDvdDataRoot(const fs::path& path) {
 }
 
 static const fs::path& GetDvdRoot() {
-    std::call_once(g_dvdRootOnce, []() {
+    std::lock_guard rootLock(g_dvdRootMutex);
+    if (g_dvdRoot.empty()) {
         const fs::path path = RuntimeConfigFile::ResolvedDvdRoot();
         if (path.empty()) {
             FailDvdRoot("No DVD root is configured");
@@ -273,7 +276,7 @@ static const fs::path& GetDvdRoot() {
             FailDvdRoot("Configured DVD root is not an extracted DATA directory", path);
         }
         g_dvdRoot = path;
-    });
+    }
 
     return g_dvdRoot;
 }
@@ -637,9 +640,14 @@ static void ScanDirectory(const fs::path& root, const std::string& virtualPrefix
             return;
         }
 
-        const fs::path relative = fs::relative(entry.path(), root, entryEc);
-        if (entryEc) {
-            return;
+        // Iterated paths start with `root`, so compare lexically: fs::relative resolves every
+        // component on disk, which made this scan take seconds on Android shared storage.
+        fs::path relative = entry.path().lexically_relative(root);
+        if (relative.empty() || *relative.begin() == "..") {
+            relative = fs::relative(entry.path(), root, entryEc);
+            if (entryEc) {
+                return;
+            }
         }
 
         std::string prefix = virtualPrefix.empty() ? "/" : virtualPrefix;
@@ -1272,3 +1280,18 @@ PPC_NATIVE_OVERRIDE(801D0980, DVDCheckDevice_801643FC, int32_t, (), ());
 extern "C" int32_t DVDLowClearCoverInterrupt_80166964(uint32_t cb) { return 1; }
 PPC_NATIVE_OVERRIDE(8027FA14, DVDLowClearCoverInterrupt_80166964, int32_t, (uint32_t cb), (cb));
 
+
+void DVD_HLE_ResetFrontend() {
+    std::scoped_lock lock(g_dvdRootMutex, g_readCacheMutex, g_pendingDvdCallbackMutex);
+    g_dvdRoot.clear();
+    g_fileEntries.clear();
+    g_pathToEntry.clear();
+    g_publishedExtents.clear();
+    g_fstFiles.clear();
+    g_fstLoaded = g_dvdInitialized = false;
+    g_pendingDvdCallbacks.clear();
+    g_readCache.clear();
+    g_loggedReadErrors.clear();
+    g_dvdReadNanos = 0;
+    g_dvdReads = 0;
+}

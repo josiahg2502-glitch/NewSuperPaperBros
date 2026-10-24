@@ -606,3 +606,8 @@ NAND_ASYNC_FWD_BODY(NANDChangeDirAsync_HLE, NANDChangeDir_SPM,
 PPC_NATIVE_OVERRIDE(802992C8, NANDChangeDirAsync_HLE, int32_t,
     (uint32_t pathPtr, uint32_t callbackPtr, uint32_t commandBlockPtr),
     (pathPtr, callbackPtr, commandBlockPtr));
+
+void NAND_HLE_ResetFrontendCallbacks() {
+    std::lock_guard lock(g_pendingNandCallbackMutex);
+    g_pendingNandCallbacks.clear();
+}

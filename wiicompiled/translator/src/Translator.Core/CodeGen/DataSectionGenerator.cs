@@ -141,7 +141,7 @@ public static class DataSectionGenerator
         writer.WriteLine("} // namespace");
         writer.WriteLine();
         writer.WriteLine("extern \"C\" void InitializeDataSections() {");
-        writer.WriteLine("    if (g_dataInitialized) return;");
+        // A new guest session reuses the process and must restore embedded sections.
         writer.WriteLine("    g_dataInitialized = true;");
         writer.WriteLine();
         writer.WriteLine("    std::cout << \"[runtime] Initializing embedded data sections...\" << std::endl;");

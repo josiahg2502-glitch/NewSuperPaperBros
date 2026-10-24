@@ -2192,6 +2192,12 @@ void shutdown() noexcept {
   g_gxState.loadedTextures.fill({});
   g_gxState.loadedTluts.fill({});
   clear_copy_texture_cache();
+  sEmptyTextureView = {};
+  sEmptyTexture = {};
+  sEmptySampler = {};
+  // Device resources and logical copy/viewport state belong to one content session.
+  // Retaining the previous game's display-copy rectangle crops the next boot.
+  g_gxState = make_default_gx_state();
 }
 } // namespace aurora::gx
 

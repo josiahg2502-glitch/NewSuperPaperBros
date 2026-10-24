@@ -135,6 +135,9 @@ typedef struct {
   const char* pipelineCachePath;
 
   AuroraGpuCompat gpuCompat;
+  // Frontend-owned presentation: no SDL window, swapchain, ImGui or pacing worker.
+  // Use aurora/external.h to consume complete frames on the existing Dawn device.
+  bool externalPresentation;
 } AuroraConfig;
 
 typedef enum {

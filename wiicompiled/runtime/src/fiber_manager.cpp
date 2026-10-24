@@ -1,4 +1,5 @@
 #include "fiber_manager.h"
+#include "frontend/runtime_mode.h"
 #include "memory.h"
 #include "abi_bridge.h"
 #include "hle_stubs.h"
@@ -209,6 +210,13 @@ void GuestFiberManager::Shutdown() {
         }
     }
     s_fibers.clear();
+    for (void* fiber : s_fibersPendingDelete) {
+        if (fiber && !HostContext::IsCurrent(fiber)) HostContext::Destroy(fiber);
+    }
+    s_fibersPendingDelete.clear();
+    s_currentGuestThread = 0;
+    s_cpuContext = nullptr;
+    g_viRetracePendingCount = 0;
 
     if (s_schedulerFiber) {
         HostContext::ShutdownScheduler(s_schedulerFiber);
@@ -216,6 +224,20 @@ void GuestFiberManager::Shutdown() {
     }
 
     s_initialized = false;
+}
+
+void GuestFiberManager::CancelFrontendFibers() {
+    std::vector<void*> handles;
+    {
+        std::lock_guard lock(s_mutex);
+        for (auto& [address, fiber] : s_fibers) {
+            if (fiber.fiber && !fiber.isSchedulerFiber && !fiber.terminated)
+                handles.push_back(fiber.fiber);
+        }
+    }
+    for (void* handle : handles) {
+        try { HostContext::Switch(handle); } catch (const RuntimeFrontend::Cancelled&) {}
+    }
 }
 
 bool GuestFiberManager::IsInitialized() {
@@ -413,6 +435,7 @@ void GuestFiberManager::SwitchToThread(uint32_t guestThreadAddr, CpuContext* cpu
 
     // Switch to the target fiber (the target fiber will load its own context)
     HostContext::Switch(fiberHandle);
+    RuntimeFrontend::CheckCancellation();
 
     // When we return here, the fiber that issued SwitchToThread has resumed.
     // That does not automatically mean the previous guest thread became runnable
@@ -630,7 +653,16 @@ void GuestFiberManager::FiberProc(void* param)
     // Call the translated thread entry function
     const auto* info = TranslatedFunctionRegistry::FindByAddressPtr(entryPoint);
     if (info) {
-        InvokeIndirectCpu(entryPoint, cpu);
+        try {
+            RuntimeFrontend::CheckCancellation();
+            InvokeIndirectCpu(entryPoint, cpu);
+        } catch (const RuntimeFrontend::Cancelled&) {
+            // Cooperative frontend cancellation unwinds this fiber's native stack.
+        } catch (const std::exception& error) {
+            if (!RuntimeFrontend::Active()) throw;
+            RT_LOGF(RT_TAG_RUNTIME, "Guest fiber failed: %s\n", error.what());
+            try { RuntimeFrontend::Fail(error.what()); } catch (const RuntimeFrontend::Cancelled&) {}
+        }
     } else {
         RT_LOG(RT_TAG_OS) << "Thread entry 0x" << std::hex << entryPoint
                   << " not found in registry!" << std::dec << std::endl;

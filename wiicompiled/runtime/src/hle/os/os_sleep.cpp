@@ -512,3 +512,8 @@ extern "C" void OSSleepThread_HLE_801aa9b8(CpuContext* ctx)
     OS__RestoreInterrupts_801a65d4(irqState);
 }
 PPC_NATIVE_OVERRIDE_VOID(802757F4, OSSleepThread_HLE_801aa9b8, (CpuContext* ctx), (ctx));
+
+void OS_HLE_ResetFrontendSleep() {
+    std::lock_guard lock(OsHleInternal::gSleepTimerMutex);
+    OsHleInternal::gSleepTimers.clear();
+}

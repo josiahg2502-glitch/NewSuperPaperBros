@@ -1,3 +1,4 @@
+#include "frontend/runtime_mode.h"
 #include "det_clock.h"
 #include "display_settings.h"
 
@@ -97,7 +98,7 @@ float LinesForScale(float renderScale) {
 // Deterministic mode (network play) keeps every device on the same 16:9 canvas: how wide the game
 // draws decides which enemies it wakes, so Fill's screen-dependent width would desync the session.
 Settings Lockstep(Settings settings) {
-    if (DetClock::Enabled()) {
+    if (DetClock::Enabled() && !RuntimeFrontend::Active()) {
         settings.aspect = kAspect16x9;
     }
     return settings;

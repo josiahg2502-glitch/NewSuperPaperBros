@@ -1,3 +1,4 @@
+#include "frontend/runtime_mode.h"
 // SelectThread scheduler, OSWakeupThread and the OSMutex primitives.
 
 #include <algorithm>
@@ -263,6 +264,7 @@ extern "C" void SelectThread_801a9c08(CpuContext* ctx)
             while (::Memory::Read32(kSchedulerPendingFlagAddr) == 0) {
                 if (DetClock::Enabled()) {
                     DeterministicIdleStep(cpu);
+                    RuntimeFrontend::SuspendIfRequested();  // a libretro frame ends at this loop's top
                     continue;
                 }
                 ProcessSleepTimers(cpu);
