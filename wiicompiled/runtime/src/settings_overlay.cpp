@@ -2354,34 +2354,9 @@ void DrawDisplayPage() {
 }
 
 
-struct DebugFlagName { int first; int last; const char* text; };
-constexpr DebugFlagName kFlagNames[] = {
-#include "spm_flag_names.inc"
-};
-
 void DrawFlagListPage() {
-    static char filter[48] = "";
     SpmMapSweep::RequestFlagSnapshot();
-    ImGui::SetNextItemWidth(260.0f);
-    ImT::InputTextWithHint("##flagsearch", Tr("Search..."), filter, sizeof filter);
     DrawFlagsMenu();
-    ImGui::Separator();
-    if (ImGui::BeginChild("##flaglist", ImVec2(0.0f, 0.0f), true)) {
-        for (const auto& row : kFlagNames) {
-            const int count = row.last - row.first + 1;
-            for (int flag = row.first; flag <= row.last; ++flag) {
-                char label[300];
-                if (count == 1) std::snprintf(label, sizeof label, "%d  %s", flag, row.text);
-                else std::snprintf(label, sizeof label, "%d  %s  [%d/%d]", flag, row.text, flag - row.first + 1, count);
-                if (filter[0] && !ContainsNoCase(label, filter)) continue;
-                bool on = SpmMapSweep::FlagValue(flag);
-                char id[340];
-                std::snprintf(id, sizeof id, "%s##flag%d", label, flag);
-                if (ImGui::Checkbox(id, &on)) SpmMapSweep::SetSystemFlag(flag, on);
-            }
-        }
-    }
-    ImGui::EndChild();
 }
 
 void DrawStoryPage() { DrawStoryMenu(); ImGui::Separator(); DrawVariablesMenu(); }

@@ -622,7 +622,7 @@ void RemoveItem(int itemId) {
 }
 // Tippi is the game's "guide", not a pouch item: the open-world mod only switches her on, it never adds item 220, and
 // she is not in the game's Pixl menu. As a pouch Pixl she showed up there and selecting her crashed (mot_fairy_other.c).
-// guideWork.flag0 bit 0x80 (GUIDE_FLAG0_DISABLE, spm-decomp guide.h) turns her off; saving copies it into GSWF 403.
+// guideWork.flag0 bit 0x80 turns her off; saving copies it into GSWF 403.
 static void SetTippiEnabled(CpuContext* cpu, bool enabled) {
     const uint32_t guide = CallGuest(cpu, 0x8011EFD0, 0);                                                    // guideGetWork
     if (!Memory::Contains(guide, 2)) return;

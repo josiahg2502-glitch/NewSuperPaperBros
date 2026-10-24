@@ -35,7 +35,7 @@ struct DebugState {
     int curChar = -1;            // item id of the character played (216 Mario .. 219 Luigi)
     int curPixl = -1;            // item id of the Pixl in use
     bool tippi = false;          // Tippi (the guide) enabled
-    uint8_t pouch[0x6A0] = {};   // MarioPouchWork (spm-docs mario_pouch.h)
+    uint8_t pouch[0x6A0] = {};   // the game's pouch work
 };
 void RequestState();
 bool GetState(DebugState& out);
