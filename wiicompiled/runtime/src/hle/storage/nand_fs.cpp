@@ -2,6 +2,7 @@
 // <nand_root>\title\00010000\534d4e45\data\... on the host.
 
 #include "nand_internal.h"
+#include "save_state.h"
 
 #include "isa/big_endian.h"
 #include "hle/storage/riivolution.h"
@@ -52,6 +53,27 @@ int32_t AllocateFd(const std::filesystem::path& path, FILE* file, int32_t mode) 
     int32_t fd = g_nextFd++;
     g_fileHandles[fd] = {file, path, mode, 0};
     return fd;
+}
+
+// Save states: the descriptor counter (the game keeps fds in its memory). Open files are not carried
+// over, so a state can only be captured while none is open; a restore closes the ones opened since.
+bool NAND_HLE_SaveState(SaveState::Writer& out, std::string& error) {
+    std::lock_guard<std::mutex> lock(g_fdMutex);
+    if (!g_fileHandles.empty()) {
+        error = "a NAND file is open";
+        return false;
+    }
+    out.Pod(g_nextFd);
+    return true;
+}
+
+void NAND_HLE_LoadState(SaveState::Reader& in) {
+    std::lock_guard<std::mutex> lock(g_fdMutex);
+    for (auto& [fd, handle] : g_fileHandles) {
+        if (handle.file) std::fclose(handle.file);
+    }
+    g_fileHandles.clear();
+    in.Pod(g_nextFd);
 }
 
 FileHandle* GetHandle(int32_t fd) {

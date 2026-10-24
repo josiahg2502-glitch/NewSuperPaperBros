@@ -1,5 +1,6 @@
 #pragma once
 #include "frontend/runtime_mode.h"
+#include "save_state_resume.h"
 #include "memory.h"
 #include "ppc_runtime.h"
 #include "system_bridge.h"

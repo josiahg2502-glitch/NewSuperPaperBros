@@ -17,6 +17,7 @@
 #include "runtime_log.h"
 #include "guest_profiler.h"
 #include "spm_map_sweep.h"
+#include "save_state.h"
 
 #include <dolphin/gx/GXAurora.h>
 #include <dolphin/vi.h>
@@ -30,6 +31,7 @@
 #include <chrono>
 #include <cmath>
 #include <string>
+#include <optional>
 #include <cstdint>
 #include <cstdio>
 #include <iostream>
@@ -1385,17 +1387,33 @@ extern "C" void VIWaitForRetrace_HLE_801b99ec(CpuContext* ctx)
     CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
     
     if (Fiber::GuestFiberManager::IsInitialized()) {
-        const int32_t irqState = OS__DisableInterrupts_801a65ac();
+        bool resumedRunning = false;
+        const SaveState::YieldRecord* resumed = SaveState::TakeYield(SaveState::YieldKind::ViWaitForRetrace, resumedRunning);
+        const CpuContext entry = *cpu;
+        const int32_t irqState = resumed ? static_cast<int32_t>(resumed->extra[1]) : OS__DisableInterrupts_801a65ac();
         uint32_t retraceCount = 0;
-        {
+        if (resumed) {
+            retraceCount = resumed->extra[0];
+        } else {
             std::lock_guard<std::mutex> lock(g_viMutex);
             EnsureInitializedLocked();
             retraceCount = g_vi.retraceCount;
         }
+        // Save states: the wait every frame's main loop parks in; a restored thread continues after its sleep.
+        std::optional<SaveState::YieldScope> yieldScope;
+        if (resumed) yieldScope.emplace(*resumed);
+        else yieldScope.emplace(SaveState::YieldKind::ViWaitForRetrace, entry,
+                                std::initializer_list<uint32_t>{retraceCount, static_cast<uint32_t>(irqState)});
+        bool continuing = resumed != nullptr;
 
         do {
             cpu->gpr[3] = kViRetraceQueueAddr;
-            OSSleepThread_HLE_801aa9b8(cpu);
+            if (continuing) {
+                OS_HLE_SleepResume(cpu, resumedRunning, 0);  // the sleep ran with interrupts already off
+                continuing = false;
+            } else {
+                OSSleepThread_HLE_801aa9b8(cpu);
+            }
 
             {
                 std::lock_guard<std::mutex> lock(g_viMutex);
@@ -1446,4 +1464,14 @@ void VI_HLE_ResetFrontend() {
     s_presentedXfbFrames = 0;
     s_lastPacedRetraceCount = ~0u;
     s_lastPresentAnchorNanos = 0;
+}
+
+void VI_HLE_SaveState(SaveState::Writer& out) {
+    std::lock_guard<std::mutex> lock(g_viMutex);
+    out.Pod(g_vi);
+}
+
+void VI_HLE_LoadState(SaveState::Reader& in) {
+    std::lock_guard<std::mutex> lock(g_viMutex);
+    in.Pod(g_vi);
 }

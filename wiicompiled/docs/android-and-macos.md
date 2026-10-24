@@ -89,6 +89,16 @@ Install on the device:
 - **Performance.** The game thread is kept off the slowest CPU cluster on big.LITTLE devices.
   Every 600 frames the log gets an `SPM perf` line (fps, game speed, time per phase, audio buffer).
 
+### Save states
+
+RetroArch's save and load state work once the game is running. A state holds the whole guest (memory, threads,
+HLE, audio and GX state) and loads only into the same core build. It can be loaded in a fresh
+session, including auto-load at start. Netplay, run-ahead and rewind are not supported.
+
+The translator makes the functions in `projects/spm/resumable_functions.inc` resumable at their call
+sites, so a loaded state can rebuild each guest thread's native stack. Saving is refused when a
+thread's call chain goes through a function not on that list; the log names the function.
+
 ### Core options
 
 | Option | Values | Effect |
@@ -159,4 +169,6 @@ python3 tools/android/host-diagnostic.py run --frames 3600 --output build-logs/h
 The output folder gets `runtime.log` and `result.json`. `--cycles N` loads and unloads the
 content N times in one process. Environment variables add more:
 `SPM_FRONTEND_INPUT="3000:TWO:6,3200:DOWN+A:10"` holds buttons from a frame for some frames, and
-`SPM_FRAME_STEP=2` runs at half rate.
+`SPM_FRAME_STEP=2` runs at half rate. `SPM_STATE_AT="3000:4000"` captures a state after frame 3000
+and restores it after frame 4000. `SPM_STATE_SAVE="4000:/path"` and `SPM_STATE_LOAD="60:/path:4000"`
+save and load a state file across runs.

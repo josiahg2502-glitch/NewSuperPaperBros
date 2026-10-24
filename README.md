@@ -21,7 +21,7 @@ Android program, or as a RetroArch core on Android.
 - On-screen buttons match your controller (Xbox, PlayStation or Nintendo), with a controls screen for it
 - Mods: drop-in folders that replace game files or textures
 - A launcher that installs the game from your own disc image
-- Android (a RetroArch libretro core or a standalone app) and macOS builds from source
+- Android (a RetroArch libretro core with save states, or a standalone app) and macOS builds from source
 
 **No game data is included**: the game's files are read from your own copy of the game.
 

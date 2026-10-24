@@ -256,6 +256,9 @@ RETRO_API bool retro_load_game(const retro_game_info* content) {
         const char* resolution = option("spm_prepare_resolution", "640x480");
         prepareWidth = std::strcmp(resolution, "1280x960") == 0 ? 1280 : std::strcmp(resolution, "960x720") == 0 ? 960 : 640;
         prepareHeight = prepareWidth * 3 / 4;
+        // States are whole-machine snapshots of one core build: no netplay, run-ahead or rewind.
+        uint64_t quirks = RETRO_SERIALIZATION_QUIRK_INCOMPLETE | RETRO_SERIALIZATION_QUIRK_PLATFORM_DEPENDENT;
+        environment(RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS, &quirks);
         static const retro_audio_buffer_status_callback status{audioBufferStatus};
         if (!environment(RETRO_ENVIRONMENT_SET_AUDIO_BUFFER_STATUS_CALLBACK, const_cast<retro_audio_buffer_status_callback*>(&status)))
             audioOccupancy = -1;
@@ -278,6 +281,20 @@ RETRO_API void retro_unload_game() {
     frontend = nullptr; loaded = false; stopped = false; frames = 0;
 }
 namespace {
+// Fixed size (length, state, zero padding) so the frontend sees one size before the game runs, which
+// auto-load at start needs. A load before the first frame boundary is applied by retro_run.
+constexpr size_t kStateHeadroom = 16u << 20;  // beyond guest memory: threads, HLE state, display lists
+constexpr size_t kStateSize = sizeof(uint64_t) + 24u * 1024 * 1024 + 128u * 1024 * 1024 + kStateHeadroom;
+std::vector<uint8_t> pendingState;
+bool applyState(const std::vector<uint8_t>& state) {
+    std::string error;
+    const auto start = std::chrono::steady_clock::now();
+    const bool restored = RuntimeFrontend::RestoreState(state, error);
+    log("SPM state load at frame=%u %s%s (%.1f ms)", frames, restored ? "ok" : "refused: ", error.c_str(),
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+    if (restored) pcm.Clear();
+    return restored;
+}
 // Logged every 600 frames as one "SPM perf" line.
 struct GameplayTiming {
     using Clock = std::chrono::steady_clock;
@@ -397,6 +414,10 @@ RETRO_API void retro_run() {
         const auto result = RuntimeFrontend::AdvanceOneFrame(snapshot, {});
         require(result != RuntimeFrontend::FrameResult::Failed && result != RuntimeFrontend::FrameResult::Stopped, RuntimeFrontend::LastError());
         require(aurora_external_healthy(), "Aurora Dawn device was lost");
+        if (!pendingState.empty()) {
+            applyState(pendingState);
+            pendingState = {};
+        }
         const auto advanced = std::chrono::steady_clock::now();
         if (aurora_external_output()) {
             bridge->frame(640, 480);
@@ -414,9 +435,38 @@ RETRO_API void retro_reset() {
 }
 RETRO_API void retro_set_controller_port_device(unsigned, unsigned) {}
 RETRO_API unsigned retro_get_region() { return RETRO_REGION_NTSC; }
-RETRO_API size_t retro_serialize_size() { return 0; }
-RETRO_API bool retro_serialize(void*, size_t) { return false; }
-RETRO_API bool retro_unserialize(const void*, size_t) { return false; }
+RETRO_API size_t retro_serialize_size() { return kStateSize; }
+RETRO_API bool retro_serialize(void* data, size_t size) {
+    if (!running || frames == 0 || size < kStateSize) return false;
+    static std::vector<uint8_t> state;
+    std::string error;
+    const auto start = std::chrono::steady_clock::now();
+    const bool captured = RuntimeFrontend::CaptureState(state, error);
+    if (captured && state.size() + sizeof(uint64_t) > size) error = "state larger than the reported size";
+    log("SPM state save at frame=%u %s%s (%zu bytes, %.1f ms)", frames, captured && error.empty() ? "ok" : "refused: ",
+        error.c_str(), state.size(), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+    if (!captured || !error.empty()) return false;
+    const uint64_t length = state.size();
+    auto* out = static_cast<uint8_t*>(data);
+    std::memcpy(out, &length, sizeof(length));
+    std::memcpy(out + sizeof(length), state.data(), state.size());
+    std::memset(out + sizeof(length) + state.size(), 0, size - sizeof(length) - state.size());
+    return true;
+}
+RETRO_API bool retro_unserialize(const void* data, size_t size) {
+    uint64_t length = 0;
+    if (!data || size < sizeof(length)) return false;
+    std::memcpy(&length, data, sizeof(length));
+    if (length == 0 || length > size - sizeof(length)) return false;
+    const auto* bytes = static_cast<const uint8_t*>(data) + sizeof(length);
+    std::vector<uint8_t> state(bytes, bytes + length);
+    if (!running || frames == 0) {
+        log("SPM state load deferred until the game's first frame");
+        pendingState = std::move(state);
+        return true;
+    }
+    return applyState(state);
+}
 RETRO_API void retro_cheat_reset() {}
 RETRO_API void retro_cheat_set(unsigned, bool, const char*) {}
 RETRO_API bool retro_load_game_special(unsigned, const retro_game_info*, size_t) { return false; }

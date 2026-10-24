@@ -482,3 +482,8 @@ void __GXFlushTextureState() {
   __gx->bpSent = 1;
 }
 }
+
+// Save states (the embedding runtime): the object id counters, so ids handed out after a load never
+// repeat ones a restored guest still holds.
+extern "C" void aurora_gx_get_object_ids(u32* tex, u32* tlut) { *tex = sNextTexObjId; *tlut = sNextTlutObjId; }
+extern "C" void aurora_gx_set_object_ids(u32 tex, u32 tlut) { sNextTexObjId = tex; sNextTlutObjId = tlut; }

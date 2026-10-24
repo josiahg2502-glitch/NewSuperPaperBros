@@ -39,6 +39,8 @@ void AdvanceTo(uint64_t ticks) noexcept;
 void PaceTo(uint64_t ticks);
 // Forgets the real-time anchor, so the next PaceTo starts a fresh one (after a long host wait).
 void ResetPacing() noexcept;
+// Save states: sets the timeline to a saved instant (forward or back) and drops the pacing anchor.
+void RestoreNow(uint64_t ticks) noexcept;
 
 // Now() as a steady_clock time point on the virtual timeline, for code that keeps its deadlines as
 // time points. Never mix these with real Clock::now() values.

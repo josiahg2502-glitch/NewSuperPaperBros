@@ -21,6 +21,8 @@
 // Gamepads (aurora's default GameCube mapping): left stick or D-pad moves, south button jumps,
 // east and west run, north is A, Start is +, Back or left trigger is -, right shoulder or right
 // trigger shakes, right stick tilts.
+namespace SaveState { class Writer; class Reader; }
+
 namespace VirtualRemote {
 
 // True when `chan` should report a connected Wii Remote driven by a keyboard or gamepad.
@@ -41,4 +43,7 @@ bool InArcade();
 // Player 1's Wii Remote buttons (WPAD bits) from keyboard, gamepads and touch, as last handed to the game.
 uint32_t LastButtons();
 
+// Save states (save_state.h).
+void SaveState(::SaveState::Writer& out);
+void LoadState(::SaveState::Reader& in);
 } // namespace VirtualRemote

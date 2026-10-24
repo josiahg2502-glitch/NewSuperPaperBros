@@ -8,6 +8,7 @@
 #include "ax_dsp.h"
 #include "music_attenuation.h"
 #include "runtime_log.h"
+#include "save_state.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -721,4 +722,35 @@ void AI_HLE_ResetFrontend() {
     g_ai.accumulatorSeconds = 0;
     g_ai.detBlockDueTicks = 0;
     g_ai.loggedBackendFailure = g_ai.loggedMissingCallback = g_ai.loggedAccessFailure = false;
+}
+
+// Save states: the AI DMA registers and the deterministic block timer.
+void AI_HLE_SaveState(SaveState::Writer& out)
+{
+    std::lock_guard<std::mutex> lock(g_ai.mutex);
+    out.Pod(g_ai.startAddr);
+    out.Pod(g_ai.registerStartAddr);
+    out.Pod(g_ai.length);
+    out.Pod(g_ai.callback);
+    out.Pod(g_ai.enabled);
+    out.Pod(g_ai.sampleRate);
+    out.Pod(g_ai.bytesLeft);
+    out.Pod(g_ai.accumulatorSeconds);
+    out.Pod(g_ai.detBlockDueTicks);
+    out.Pod(g_ai.tickActive);
+}
+
+void AI_HLE_LoadState(SaveState::Reader& in)
+{
+    std::lock_guard<std::mutex> lock(g_ai.mutex);
+    in.Pod(g_ai.startAddr);
+    in.Pod(g_ai.registerStartAddr);
+    in.Pod(g_ai.length);
+    in.Pod(g_ai.callback);
+    in.Pod(g_ai.enabled);
+    in.Pod(g_ai.sampleRate);
+    in.Pod(g_ai.bytesLeft);
+    in.Pod(g_ai.accumulatorSeconds);
+    in.Pod(g_ai.detBlockDueTicks);
+    in.Pod(g_ai.tickActive);
 }

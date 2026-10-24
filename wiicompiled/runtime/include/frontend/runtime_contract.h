@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+#include <vector>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -49,6 +51,14 @@ bool Initialize(const ContentPaths&, const Callbacks&);
 FrameResult AdvanceOneFrame(const InputSnapshot&, const VideoTarget&);
 void Stop();
 bool Reset();
+// Save states: rebuild every guest thread's native stack from its recorded continuation
+// in place (guest memory and HLE state untouched). False with a reason when the guest is not at a
+// capturable point; the session is unchanged then.
+bool RebuildContinuationsInPlace(std::string& error);
+// Save states (at a frame boundary, between AdvanceOneFrame calls): the guest's whole state as bytes, and
+// back. A state loads only into the same core build. False with a reason when it can't be done here.
+bool CaptureState(std::vector<uint8_t>& out, std::string& error);
+bool RestoreState(const std::vector<uint8_t>& data, std::string& error);
 void Unload();
 
 } // namespace RuntimeFrontend

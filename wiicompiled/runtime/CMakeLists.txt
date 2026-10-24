@@ -484,6 +484,14 @@ if(MKW_PLATFORM_MACOS)
             "${CMAKE_CURRENT_LIST_DIR}/src/host_context.cpp"
             "${CMAKE_CURRENT_LIST_DIR}/src/platform/macos/co_switch.S")
         target_include_directories(mkw_macos_host_context_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/include")
+        # Save-state continuations: rebuild native fiber stacks from guest state only.
+        add_executable(mkw_save_state_continuation_tests
+            "${CMAKE_CURRENT_LIST_DIR}/tests/save_state_continuation_tests.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/src/host_context.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/src/platform/macos/co_switch.S")
+        target_include_directories(mkw_save_state_continuation_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/include")
+        target_compile_features(mkw_save_state_continuation_tests PRIVATE cxx_std_20)
+        add_test(NAME mkw_save_state_continuation_tests COMMAND mkw_save_state_continuation_tests)
     else()
         # Intel macOS follows the same System V AMD64 libco path as Linux.
         add_executable(mkw_macos_host_context_tests

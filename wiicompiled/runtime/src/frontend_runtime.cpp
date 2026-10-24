@@ -1,5 +1,7 @@
 #include "frontend/runtime_contract.h"
 #include "frontend/runtime_mode.h"
+#include "save_state.h"
+#include "isa/ppc_isa_context.h"
 #include "frontend/hle_lifecycle.h"
 #include "abi_bridge.h"
 #include "audio_backend.h"
@@ -9,6 +11,7 @@
 #include "frame_input.h"
 #include "gx_guest_write.h"
 #include "hle/audio/ax_dsp.h"
+#include "hle_stubs.h"
 #include "host_context.h"
 #include "memory.h"
 #include "runtime_config.h"
@@ -22,6 +25,7 @@
 #include <cmath>
 #include <fstream>
 #include <cstdarg>
+#include <cstring>
 #include <optional>
 #include <thread>
 #if defined(__ANDROID__)
@@ -44,6 +48,8 @@ uint64_t presentTime = 0;
 bool suspendRequested = false;
 uint32_t frameStep = 1;          // VI retraces per frontend frame (2: half rate)
 uint32_t retracesThisFrame = 0;
+bool atCanonicalSuspend = false;
+uint32_t bootThread = 0;  // guest thread whose fiber is the boot context (restored boot root resumes it)
 
 // The gamepad as a sideways Wii Remote, with the desktop build's rules (virtual_remote.cpp PadIntent
 // and UpdatePointer), stepped once per frontend frame.
@@ -135,6 +141,90 @@ void Boot(void*) {
 }
 }
 
+// Save states: the boot context of a restored state; the main thread's continuation instead of __start.
+void BootResume(void*) {
+    try {
+        auto& cpu = GetPersistentCpuContext();
+        CpuContextScope scope(&cpu);
+        const uint32_t root = SaveState::BeginResume(bootThread);
+        CheckCancellation();
+        InvokeIndirectCpu(root, &cpu);
+    } catch (const Cancelled&) {
+    } catch (const std::exception& error) {
+        failed = true;
+        lastError = error.what();
+        RT_LOGF(RT_TAG_RUNTIME, "Frontend guest failed: %s\n", error.what());
+    }
+    stopping = true;
+    Fiber::GuestFiberManager::CancelFrontendFibers();
+    finished = true;
+    suspended = HostContext::Current();
+    HostContext::Switch(frontend);
+    for (;;) HostContext::Switch(frontend);
+}
+
+struct Continuations {
+    std::vector<SaveState::ThreadContinuation> threads;
+    uint32_t running = 0, boot = 0;
+    CpuContext live{};
+    std::vector<Fiber::FiberRecord> fibers;
+    uint32_t currentThread = 0;
+};
+
+bool CaptureContinuations(Continuations& out, std::string& error) {
+    if (!active || finished || !atCanonicalSuspend || !suspended) { error = "guest not at a frame boundary"; return false; }
+    out = {};
+    struct Visit { Continuations* out; std::vector<std::pair<uint32_t, uint32_t>> started; } visit{&out, {}};
+    const bool listed = Fiber::GuestFiberManager::ForEachFiber(
+        [](uint32_t thread, const Fiber::GuestFiber& fiber, bool, void* user) {
+            auto& v = *static_cast<Visit*>(user);
+            if (fiber.terminated || !fiber.fiber) return;
+            if (fiber.fiber == suspended) v.out->running = thread;
+            if (fiber.fiber == Fiber::GuestFiberManager::SchedulerFiber()) v.out->boot = thread;
+            if (fiber.started) v.started.emplace_back(thread, fiber.fiber == Fiber::GuestFiberManager::SchedulerFiber() ? 0x80006124u : fiber.entryPoint);
+        },
+        &visit);
+    if (!listed) { error = "fiber table busy"; return false; }
+    if (!out.running || !out.boot) {
+        char text[160];
+        std::snprintf(text, sizeof(text), "running %08X or boot %08X thread unknown (%zu started, suspended=%p boot=%p)",
+                      out.running, out.boot, visit.started.size(), suspended, boot);
+        error = text;
+        return false;
+    }
+    for (const auto& [thread, root] : visit.started) {
+        SaveState::ThreadContinuation continuation;
+        std::string reason;
+        if (!SaveState::CaptureThread(thread, root, thread == out.running, continuation, reason)) {
+            char text[160];
+            std::snprintf(text, sizeof(text), "thread %08X: %s", thread, reason.c_str());
+            error = text;
+            return false;
+        }
+        out.threads.push_back(std::move(continuation));
+    }
+    out.live = GetPersistentCpuContext();
+    Fiber::GuestFiberManager::ExportTable(out.fibers, out.currentThread);
+    return true;
+}
+
+bool RestoreContinuations(const Continuations& state, std::string& error) {
+    SaveState::ResetForRestore();
+    for (const auto& thread : state.threads) SaveState::SetPendingResume(thread);
+    bootThread = state.boot;
+    void* newBoot = nullptr;
+    void* newRunning = nullptr;
+    if (!Fiber::GuestFiberManager::RebuildForRestore(state.fibers, boot, BootResume, state.running, &newBoot, &newRunning)) {
+        error = "fiber rebuild failed";
+        return false;
+    }
+    HostContext::Destroy(boot);
+    boot = newBoot;
+    suspended = newRunning;
+    GetPersistentCpuContext() = state.live;
+    return true;
+}
+
 void Printf(const char* format, ...) {
     va_list arguments;
     va_start(arguments, format);
@@ -168,7 +258,9 @@ bool SuspendRequested() noexcept { return active && suspendRequested; }
 void SuspendIfRequested() {
     if (!active || !suspendRequested) return;
     suspendRequested = false;
+    atCanonicalSuspend = true;  // the only point a save state captures or restores
     SuspendAtVI();
+    atCanonicalSuspend = false;
 }
 void SuspendAtVI() {
     if (!active) return;
@@ -294,6 +386,143 @@ void Unload() {
     RuntimePlatform::ClearFrontendDirectories();
     shakeFrame = 9;
     remote = {};
+}
+
+namespace {
+constexpr uint32_t kStateMagic = SaveState::Tag("SPMS"), kStateVersion = 1;
+// States resume translated code at its call sites, so they load only into the build that wrote them.
+constexpr char kStateBuild[32] = __DATE__ " " __TIME__;
+constexpr uint32_t kMem1Base = 0x80000000u, kMem2Base = 0x90000000u;
+
+void WriteContinuations(SaveState::Writer& out, const Continuations& state) {
+    out.Pod(state.running);
+    out.Pod(state.boot);
+    out.Pod(state.live);
+    out.Pod(state.currentThread);
+    out.Pod(uint32_t(state.fibers.size()));
+    for (const auto& fiber : state.fibers) out.Pod(fiber);
+    out.Pod(uint32_t(state.threads.size()));
+    for (const auto& thread : state.threads) {
+        out.Pod(thread.thread);
+        out.Pod(thread.running);
+        out.Pod(thread.yield);
+        out.Pod(uint32_t(thread.frames.size()));
+        for (const auto& frame : thread.frames) out.Pod(frame);
+    }
+}
+
+void ReadContinuations(SaveState::Reader& in, Continuations& state) {
+    in.Pod(state.running);
+    in.Pod(state.boot);
+    in.Pod(state.live);
+    in.Pod(state.currentThread);
+    state.fibers.resize(std::min<uint32_t>(in.Get<uint32_t>(), 4096));
+    for (auto& fiber : state.fibers) in.Pod(fiber);
+    state.threads.resize(std::min<uint32_t>(in.Get<uint32_t>(), 4096));
+    for (auto& thread : state.threads) {
+        in.Pod(thread.thread);
+        in.Pod(thread.running);
+        in.Pod(thread.yield);
+        thread.frames.resize(std::min<uint32_t>(in.Get<uint32_t>(), 64));
+        for (auto& frame : thread.frames) in.Pod(frame);
+    }
+}
+}  // namespace
+
+bool CaptureState(std::vector<uint8_t>& out, std::string& error) {
+    Continuations continuations;
+    if (!CaptureContinuations(continuations, error)) return false;
+    out.clear();
+    out.reserve(Memory::kMem1Size + Memory::kMem2Size + (1 << 20));
+    SaveState::Writer writer(out);
+    writer.Pod(kStateMagic);
+    writer.Pod(kStateVersion);
+    writer.Pod(kStateBuild);
+    size_t at = writer.Begin(SaveState::Tag("THRD"));
+    WriteContinuations(writer, continuations);
+    writer.End(at);
+    at = writer.Begin(SaveState::Tag("FRNT"));
+    writer.Pod(retracesThisFrame);
+    writer.Pod(remote);
+    writer.Pod(DetClock::Now());
+    writer.End(at);
+    at = writer.Begin(SaveState::Tag("VI  "));
+    VI_HLE_SaveState(writer);
+    writer.End(at);
+    at = writer.Begin(SaveState::Tag("OS  "));
+    OS_HLE_SaveState(writer);
+    writer.End(at);
+    at = writer.Begin(SaveState::Tag("AI  "));
+    AI_HLE_SaveState(writer);
+    writer.End(at);
+    at = writer.Begin(SaveState::Tag("INPT"));
+    KPAD_HLE_SaveState(writer);
+    VirtualRemote::SaveState(writer);
+    writer.End(at);
+    at = writer.Begin(SaveState::Tag("NAND"));
+    if (!NAND_HLE_SaveState(writer, error)) return false;
+    writer.End(at);
+    at = writer.Begin(SaveState::Tag("GXDL"));
+    if (!GXDL_HLE_SaveState(writer, error)) return false;
+    writer.End(at);
+    at = writer.Begin(SaveState::Tag("MEM1"));
+    writer.Bytes(Memory::GetPointer(kMem1Base, Memory::kMem1Size), Memory::kMem1Size);
+    writer.End(at);
+    at = writer.Begin(SaveState::Tag("MEM2"));
+    writer.Bytes(Memory::GetPointer(kMem2Base, Memory::kMem2Size), Memory::kMem2Size);
+    writer.End(at);
+    return true;
+}
+
+bool RestoreState(const std::vector<uint8_t>& data, std::string& error) {
+    if (!active || finished || !suspended) { error = "guest not running"; return false; }
+    // Find and check every section before touching the running guest.
+    SaveState::Reader in(data.data(), data.size());
+    char build[sizeof(kStateBuild)] = {};
+    const bool header = in.Get<uint32_t>() == kStateMagic && in.Get<uint32_t>() == kStateVersion;
+    in.Pod(build);
+    if (!header || !in.Ok()) { error = "not a Super Paper Mario state"; return false; }
+    if (std::memcmp(build, kStateBuild, sizeof(build)) != 0) { error = "state was saved by a different core build"; return false; }
+    SaveState::Reader threads = in.Section(SaveState::Tag("THRD"));
+    SaveState::Reader frontendState = in.Section(SaveState::Tag("FRNT"));
+    SaveState::Reader vi = in.Section(SaveState::Tag("VI  "));
+    SaveState::Reader os = in.Section(SaveState::Tag("OS  "));
+    SaveState::Reader ai = in.Section(SaveState::Tag("AI  "));
+    SaveState::Reader input = in.Section(SaveState::Tag("INPT"));
+    SaveState::Reader nand = in.Section(SaveState::Tag("NAND"));
+    SaveState::Reader gxdl = in.Section(SaveState::Tag("GXDL"));
+    SaveState::Reader mem1 = in.Section(SaveState::Tag("MEM1"));
+    SaveState::Reader mem2 = in.Section(SaveState::Tag("MEM2"));
+    Continuations continuations;
+    ReadContinuations(threads, continuations);
+    const auto savedRetraces = frontendState.Get<uint32_t>();
+    const auto savedRemote = frontendState.Get<Remote>();
+    const auto clock = frontendState.Get<uint64_t>();
+    const uint8_t* mem1Bytes = mem1.Take(Memory::kMem1Size);
+    const uint8_t* mem2Bytes = mem2.Take(Memory::kMem2Size);
+    if (!in.AtEnd() || !threads.AtEnd() || !frontendState.AtEnd() || !mem1.AtEnd() || !mem2.AtEnd() || !vi.Ok() || !os.Ok() || !ai.Ok() || !input.Ok() || !nand.Ok() || !gxdl.Ok()) {
+        error = "malformed state";
+        return false;
+    }
+    std::memcpy(Memory::GetPointer(kMem1Base, Memory::kMem1Size), mem1Bytes, Memory::kMem1Size);
+    std::memcpy(Memory::GetPointer(kMem2Base, Memory::kMem2Size), mem2Bytes, Memory::kMem2Size);
+    DetClock::RestoreNow(clock);
+    VI_HLE_LoadState(vi);
+    OS_HLE_LoadState(os);
+    AI_HLE_LoadState(ai);
+    KPAD_HLE_LoadState(input);
+    VirtualRemote::LoadState(input);
+    NAND_HLE_LoadState(nand);
+    GXDL_HLE_LoadState(gxdl);
+    retracesThisFrame = savedRetraces;
+    remote = savedRemote;
+    suspendRequested = false;
+    return RestoreContinuations(continuations, error);
+}
+
+bool RebuildContinuationsInPlace(std::string& error) {
+    Continuations state;
+    return CaptureContinuations(state, error) && RestoreContinuations(state, error);
 }
 
 bool Reset() {

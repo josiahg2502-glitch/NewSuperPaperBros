@@ -17,6 +17,7 @@ p.add_argument('--cycles', type=int, default=1)
 p.add_argument('--timeout', type=int, default=120, help='bounded runtime test in seconds')
 p.add_argument('--gfx-flags', default='', help='AURORA_GFX_FLAGS for the run')
 p.add_argument('--output', type=Path, default=shared.ROOT / 'build-logs/host/first-run')
+p.add_argument('--saves-from', type=Path, help='copy this earlier run\'s saves folder first')
 p.add_argument('--dawn', type=Path, default=os.environ.get('DAWN_MACOS_ARCHIVE'),
                help='local dawn-darwin-arm64.tar.gz; Aurora downloads its pinned build otherwise')
 args = p.parse_args()
@@ -59,6 +60,7 @@ if args.stage in ('run', 'all'):
     output.mkdir(parents=True, exist_ok=False)
     system = output / 'system'
     system.mkdir()
+    if args.saves_from: shutil.copytree(args.saves_from / 'saves', output / 'saves')
     for name in ('dsp_coef.bin', 'cacert.pem', 'wii_bootstrap'):
         source = build / name
         if source.is_dir(): shutil.copytree(source, system / name)

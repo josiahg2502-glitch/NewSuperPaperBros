@@ -126,6 +126,11 @@ void ResetPacing() noexcept {
     g_anchored = false;
 }
 
+void RestoreNow(uint64_t ticks) noexcept {
+    g_now.store(ticks, std::memory_order_relaxed);
+    g_anchored = false;
+}
+
 Clock::time_point NowTimePoint() noexcept {
     return Clock::time_point{TimeBaseContract::TicksToDuration(Now())};
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include <string>
 
 #include "abi_bridge.h"
 
@@ -16,6 +17,19 @@ void VI_HLE_WaitForNextRetracePoll();
 // Deterministic mode (det_clock.h): the virtual tick of the next VI retrace, DetClock::kNever
 // before VIInit.
 uint64_t VI_HLE_DetNextRetraceTicks();
+namespace SaveState { class Writer; class Reader; }
+void VI_HLE_SaveState(SaveState::Writer& out);
+void VI_HLE_LoadState(SaveState::Reader& in);
+void OS_HLE_SaveState(SaveState::Writer& out);
+void OS_HLE_LoadState(SaveState::Reader& in);
+void AI_HLE_SaveState(SaveState::Writer& out);
+void AI_HLE_LoadState(SaveState::Reader& in);
+void KPAD_HLE_SaveState(SaveState::Writer& out);
+void KPAD_HLE_LoadState(SaveState::Reader& in);
+bool NAND_HLE_SaveState(SaveState::Writer& out, std::string& error);
+void NAND_HLE_LoadState(SaveState::Reader& in);
+bool GXDL_HLE_SaveState(SaveState::Writer& out, std::string& error);
+void GXDL_HLE_LoadState(SaveState::Reader& in);
 // Single owner of the Aurora frame presentation sequence (seal, optional pace
 // to the VI retrace boundary, pre-warm the next frame). paceToRetrace is true
 // for the GXCopyDisp producer path and false for retrace-context presents.

@@ -1,4 +1,5 @@
 #include <xxhash.h>
+#include <algorithm>
 #include <vector>
 #include <cstring>
 #include <unordered_map>
@@ -6,6 +7,7 @@
 // gx_init.cpp - GX Initialization and FIFO Management
 #include "gx_internal.h"
 #include "runtime_log.h"
+#include "save_state.h"
 
 #include <cstdio>
 
@@ -211,6 +213,60 @@ bool SpmHostDisplayList(const uint8_t* list, uint32_t n, const uint8_t*& data, u
     data = g_hostDls[id].data();
     size = static_cast<uint32_t>(g_hostDls[id].size());
     return true;
+}
+
+extern "C" void aurora_gx_get_object_ids(uint32_t* tex, uint32_t* tlut);
+extern "C" void aurora_gx_set_object_ids(uint32_t tex, uint32_t tlut);
+
+// Save states: the host-side display list recordings the guest's stubs name (their texture and array
+// pointers address the fixed flat guest mapping, so they stay valid in another process), the Aurora
+// list registry and Aurora's texture/TLUT object id counters. Refused while a list is being recorded.
+bool GXDL_HLE_SaveState(SaveState::Writer& out, std::string& error) {
+    if (g_spmAuroraDlActive) {
+        error = "a display list is being recorded";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(g_auroraDlMutex);
+    out.Pod(uint32_t(g_hostDls.size()));
+    for (const auto& list : g_hostDls) {
+        out.Pod(uint32_t(list.size()));
+        out.Bytes(list.data(), list.size());
+    }
+    std::vector<std::pair<uint64_t, uint32_t>> byHash(g_hostDlByHash.begin(), g_hostDlByHash.end());
+    std::sort(byHash.begin(), byHash.end());
+    out.Pod(uint32_t(byHash.size()));
+    for (const auto& [hash, id] : byHash) { out.Pod(hash); out.Pod(id); }
+    std::vector<std::pair<uint32_t, uint32_t>> aurora(g_auroraDls.begin(), g_auroraDls.end());
+    std::sort(aurora.begin(), aurora.end());
+    out.Pod(uint32_t(aurora.size()));
+    for (const auto& [address, size] : aurora) { out.Pod(address); out.Pod(size); }
+    uint32_t tex = 0, tlut = 0;
+    aurora_gx_get_object_ids(&tex, &tlut);
+    out.Pod(tex);
+    out.Pod(tlut);
+    return true;
+}
+
+void GXDL_HLE_LoadState(SaveState::Reader& in) {
+    std::lock_guard<std::mutex> lock(g_auroraDlMutex);
+    g_hostDls.assign(in.Get<uint32_t>(), {});
+    for (auto& list : g_hostDls) {
+        const uint32_t size = in.Get<uint32_t>();
+        if (const uint8_t* bytes = in.Take(size)) list.assign(bytes, bytes + size);
+    }
+    g_hostDlByHash.clear();
+    for (uint32_t i = 0, n = in.Get<uint32_t>(); i < n && in.Ok(); ++i) {
+        const uint64_t hash = in.Get<uint64_t>();
+        g_hostDlByHash[hash] = in.Get<uint32_t>();
+    }
+    g_auroraDls.clear();
+    for (uint32_t i = 0, n = in.Get<uint32_t>(); i < n && in.Ok(); ++i) {
+        const uint32_t address = in.Get<uint32_t>();
+        g_auroraDls[address] = in.Get<uint32_t>();
+    }
+    const uint32_t tex = in.Get<uint32_t>(), tlut = in.Get<uint32_t>();
+    if (in.Ok()) aurora_gx_set_object_ids(tex, tlut);
+    g_spmAuroraDlActive = false;
 }
 
 extern "C" void GX__BeginDisplayList_80172e00(uint32_t la, uint32_t s) {

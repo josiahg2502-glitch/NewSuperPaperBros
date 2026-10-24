@@ -156,8 +156,8 @@ def main():
             run([*cli, 'translate-recursive', '0x80006124', '--project', project, '--outdir', 'generated/functions', '--output-metadata', 'generated/base_translation_output.json', '--production-source-bundle', 'generated/base_translation_sources.bin', '--no-function-files', '--prune-stale', '--threads', args.jobs], log, WC)
             run([*cli, 'emit-base-manifest', '--project', project, '--out', 'build/base', '--functions-dir', 'generated/functions', '--translation-output-metadata', 'generated/base_translation_output.json', '--region', 'E'], log, WC)
             run([*cli, 'generate-data-init', '--project', project], log, WC)
-            run([*cli, 'emit-build-shards', '--project', project, '--base-metadata', 'generated/base_translation_output.json', '--base-functions-dir', 'generated/functions', '--native-source-dir', 'runtime/src', '--out', 'generated/build_shards'], log, WC)
-        stage('translate', {**tree(translator.parent, project, WC / 'projects/spm/MAP.txt', game / 'main.dol.orig', game / 'spm_linked.rel'),
+            run([*cli, 'emit-build-shards', '--project', project, '--base-metadata', 'generated/base_translation_output.json', '--base-functions-dir', 'generated/functions', '--native-source-dir', 'runtime/src', '--out', 'generated/build_shards', '--resumable-functions', 'projects/spm/resumable_functions.inc'], log, WC)
+        stage('translate', {**tree(translator.parent, project, WC / 'projects/spm/MAP.txt', WC / 'projects/spm/resumable_functions.inc', game / 'main.dol.orig', game / 'spm_linked.rel'),
                             'native': tree(WC / 'runtime/src', WC / 'runtime/include')}, translate,
               lambda: list(map(Path, tree(WC / 'generated', WC / 'build/base'))))
     if selected('configure'):

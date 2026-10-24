@@ -6,6 +6,7 @@
 #include "runtime_config.h"
 #include "memory.h"
 #include "runtime_log.h"
+#include "save_state.h"
 #include "wii_remote_input.h"
 
 #include <aurora/aurora.h>
@@ -565,4 +566,13 @@ bool Sample(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
 
 uint32_t LastButtons() { return g_lastButtons.load(std::memory_order_relaxed); }
 
+// Save states: the per-port shake and tilt motion (the rest is read live from the pads each frame).
+void SaveState(::SaveState::Writer& out) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    out.Pod(g_motion);
+}
+void LoadState(::SaveState::Reader& in) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    in.Pod(g_motion);
+}
 } // namespace VirtualRemote
