@@ -72,18 +72,16 @@ final class AppFiles {
 
     /**
      * The first 8 bytes of sys/boot.bin name the game (6 characters) and its revision (byte 7).
-     * This port runs only the USA disc, revision 1: other revisions put the game's code elsewhere.
+     * This build runs Super Paper Mario for the USA, revision 0 (the code the translation was made from).
      */
     static String headerProblem(byte[] header) {
         final String id = new String(header, 0, 6, StandardCharsets.US_ASCII);
         final int revision = header[7] & 0xFF;
-        if (!id.equals("SMNE01")) {
-            return "That is " + id.trim() + ", not New Super Mario Bros. Wii for the USA (SMNE01). "
-                    + "This port runs only the USA disc, revision 1.";
+        if (!id.equals("R8PE01")) {
+            return "That is " + id.trim() + ", not Super Paper Mario for the USA (R8PE01).";
         }
-        if (revision != 1) {
-            return "That is New Super Mario Bros. Wii revision " + revision + ". This port runs only "
-                    + "revision 1 (Dolphin shows it under Properties > Info).";
+        if (revision != 0) {
+            return "That is Super Paper Mario revision " + revision + ". This build runs only revision 0.";
         }
         return null;
     }

@@ -51,6 +51,23 @@ if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")
     message(FATAL_ERROR "WiiCompiled only supports Release builds")
 endif()
 
+option(MKW_BUILD_LIBRETRO "Build the Android libretro frontend" OFF)
+option(MKW_FRONTEND_DIAGNOSTIC "Enable the local windowless frontend diagnostic command" OFF)
+if(MKW_FRONTEND_DIAGNOSTIC AND NOT MKW_PLATFORM_MACOS)
+    message(FATAL_ERROR "The local frontend diagnostic command currently targets macOS")
+endif()
+if(MKW_BUILD_LIBRETRO)
+    if(NOT MKW_PLATFORM_ANDROID)
+        message(FATAL_ERROR "The libretro frontend currently targets Android ARM64")
+    endif()
+    # Set before creating any static/object dependency in the product closure.
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "Static dependency closure for libretro" FORCE)
+    set(SDL_OPENGL OFF CACHE BOOL "Vulkan frontend owns graphics" FORCE)
+    set(SDL_OPENGLES OFF CACHE BOOL "Vulkan frontend owns graphics" FORCE)
+    set(SDL_AUDIO OFF CACHE BOOL "Frontend owns audio output" FORCE)
+endif()
+
 option(MKW_BUILD_PRODUCTS "Build translated WiiCompiled product targets" ON)
 option(MKW_BUILD_PSQ_TESTS "Build focused PSQ ISA tests" OFF)
 

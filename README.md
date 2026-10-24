@@ -1,7 +1,8 @@
 # New Super Paper Bros.
 
-A native PC port of **Super Paper Mario** (Wii, 2007), made by statically recompiling the game's PowerPC code to C++
-with [WiiCompiled](https://github.com/patchzyy/Wiicompiled). No emulator: the game runs as a Windows or Linux program.
+A native port of **Super Paper Mario** (Wii, 2007), made by statically recompiling the game's PowerPC code to C++
+with [WiiCompiled](https://github.com/patchzyy/Wiicompiled). No emulator: the game runs as a Windows, Linux, macOS or
+Android program, or as a RetroArch core on Android.
 
 ![Flipside in cinematic 2.39:1 widescreen](screenshots/mac_02_cinematic.png)
 
@@ -20,6 +21,7 @@ with [WiiCompiled](https://github.com/patchzyy/Wiicompiled). No emulator: the ga
 - On-screen buttons match your controller (Xbox, PlayStation or Nintendo), with a controls screen for it
 - Mods: drop-in folders that replace game files or textures
 - A launcher that installs the game from your own disc image
+- Android (a RetroArch libretro core or a standalone app) and macOS builds from source
 
 **No game data is included**: the game's files are read from your own copy of the game.
 
@@ -79,6 +81,9 @@ HD texture pack in `Play\UserData\texture_replacements\SPM_HD_4x_BC3`.
 For Linux, after those steps run `bash tools/build-linux.sh` and `bash tools/build-linux.sh --pal` in WSL (Ubuntu
 22.04) or on Linux, then `bash tools/package-linux.sh` for `dist/NewSuperPaperBros-linux.tar.gz`.
 
+For Android and macOS (USA disc only), see
+[`wiicompiled/docs/android-and-macos.md`](wiicompiled/docs/android-and-macos.md).
+
 `build-spm.ps1` translates the game and compiles it into `Play\SuperPaperMario.exe`; `package-spm.ps1` assembles the
 release folder in `dist\` (`-Zip` also writes the zip). `tools\sweep-spm-maps.py` loads every map and screenshots it
 for regression checks.
@@ -91,7 +96,7 @@ for regression checks.
 | `wiicompiled/projects/spm` | This game's project: symbols and function map |
 | `launcher` | The launcher (C# WinForms): disc setup, display options, controls, mods |
 | `launcher/linux` | The same launcher for Linux (C# Avalonia) |
-| `tools` | Build, package and test scripts |
+| `tools` | Build, package and test scripts (`tools/android`: Android and macOS) |
 
 ## Credits
 

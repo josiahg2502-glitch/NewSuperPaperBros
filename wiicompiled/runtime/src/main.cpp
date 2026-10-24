@@ -1373,7 +1373,14 @@ static void TerminateHandler() {
 }
 
 // Runtime entry point: loads the configuration, brings up aurora and runs the game.
+#if defined(MKW_FRONTEND_DIAGNOSTIC)
+int RunFrontendDiagnostic(int argc, char** argv);
+#endif
 int RuntimeMain(int argc, char** argv) {
+#if defined(MKW_FRONTEND_DIAGNOSTIC)
+    if (argc > 1 && std::string_view(argv[1]) == "--frontend-diagnostic")
+        return RunFrontendDiagnostic(argc, argv);
+#endif
     // Must run before the transcript duplicates stdout/stderr: it decides what
     // those descriptors are mirrored to now that the products are GUI-subsystem.
     AttachParentConsoleForDiagnostics();
