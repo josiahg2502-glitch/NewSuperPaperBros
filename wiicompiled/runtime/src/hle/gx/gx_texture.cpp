@@ -808,17 +808,23 @@ PPC_NATIVE_OVERRIDE_VOID(801c77d0, GX__SetTexCoordBias_801711fc, (uint32_t c, ui
 // changed only the guest struct, leaving the native twin on the first image (characters drew nothing).
 extern "C" void GX__InitTexObjData_SPM(uint32_t oa, uint32_t da) {
     const uint32_t canonical = CanonicalizeGxMainRamAddress(da);
-    {
-        std::lock_guard<std::mutex> guard(g_texObjMutex);
-        if (g_TexObjMeta.find(oa) != g_TexObjMeta.end()) {  // else extracted from the guest struct on load
-            TexObjMeta& meta = GetTexObjMeta(oa);
-            meta.dataAddr = canonical;
-            meta.needsUpload = true;
-        }
-    }
     try {  // the SDK's image3 word: physical address >> 5
         Memory::Write32(oa + 0x0C, (canonical >> 5) & 0x00FFFFFFu);
     } catch (const Memory::AccessViolation&) {
+    }
+    std::lock_guard<std::mutex> guard(g_texObjMutex);
+    if (g_TexObjMeta.find(oa) != g_TexObjMeta.end()) {  // else extracted from the guest struct on load
+        // The guest may have rewritten the whole struct before repointing it: the Fort Francis elevator
+        // (issue 41) copies a 608xH RGB5A3 texobj over its 608x480 one, then calls this. Taking only the
+        // address kept the old size, and GetTexObjMeta below marks the new guest bytes as already in sync,
+        // so the picture sampled at 480 lines (zoomed) and missed its EFB copy (scrambled RAM colours).
+        const TexObjMeta guest = ExtractTexObjMetaFromGuest(oa);
+        TexObjMeta& meta = GetTexObjMeta(oa);
+        if (guest.width != 0 && guest.height != 0) {
+            meta = guest;
+        }
+        meta.dataAddr = canonical;
+        meta.needsUpload = true;
     }
 }
 PPC_NATIVE_OVERRIDE_VOID(8028ED7C, GX__InitTexObjData_SPM, (uint32_t oa, uint32_t da), (oa, da));

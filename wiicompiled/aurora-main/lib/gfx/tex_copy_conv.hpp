@@ -18,6 +18,10 @@ struct ConvRequest {
   TextureHandle dst;         // Destination texture
   SampleFilter sampleFilter = SampleFilter::Nearest;
   bool forceOpaqueAlpha = false;
+  // A copy whose source reaches past the EFB only has data for the part inside it: that part is drawn 1:1
+  // into the top-left of the destination (viewport in destination pixels) instead of stretched over all of it.
+  uint32_t viewportWidth = 0;
+  uint32_t viewportHeight = 0;
 };
 
 bool needs_conversion(GXTexFmt fmt);

@@ -168,6 +168,8 @@ struct RenderPass {
   ClipRect resolveRect;
   ClipRect resolveSnapshotRect;
   Vec4<float> resolveSourceRect;
+  u32 resolveViewportWidth = 0;   // destination part the source covers, 0 = all of it
+  u32 resolveViewportHeight = 0;
   Range resolveUniformRange;
   std::array<u32, 3> resolveCopyFilterCoefficients{0, 64, 0};
   Vec4<float> clearColorValue{0.f, 0.f, 0.f, 0.f};
@@ -610,6 +612,9 @@ void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool cl
                                ? *sourceRectPixels
                                : Vec4<float>{static_cast<float>(rect.x), static_cast<float>(rect.y),
                                              static_cast<float>(rect.width), static_cast<float>(rect.height)};
+  const Vec4<float> originalSource = sourceRect;
+  u32 viewportWidth = 0;
+  u32 viewportHeight = 0;
   if (targetWidth > 0 && targetHeight > 0) {
     const int32_t left = std::clamp(rect.x, 0, targetWidth - 1);
     const int32_t top = std::clamp(rect.y, 0, targetHeight - 1);
@@ -629,11 +634,22 @@ void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool cl
     const float srcRight = std::clamp(sourceRect.x() + sourceRect.z(), srcLeft, srcW);
     const float srcBottom = std::clamp(sourceRect.y() + sourceRect.w(), srcTop, srcH);
     sourceRect = {srcLeft, srcTop, std::max(srcRight - srcLeft, 1.0f), std::max(srcBottom - srcTop, 1.0f)};
+    // The source reached past the EFB (the Fort Francis elevator copies up to 1024 rows of a 528-row screen):
+    // only the part inside has data, so it covers only that fraction of the destination, from its top-left.
+    const float wantedW = std::max(originalSource.z(), 1.0f);
+    const float wantedH = std::max(originalSource.w(), 1.0f);
+    if (texture &&
+        (sourceRect.z() < wantedW - 0.5f || sourceRect.w() < wantedH - 0.5f)) {
+      viewportWidth = std::max<u32>(static_cast<u32>(std::lround(texture->size.width * (sourceRect.z() / wantedW))), 1u);
+      viewportHeight = std::max<u32>(static_cast<u32>(std::lround(texture->size.height * (sourceRect.w() / wantedH))), 1u);
+    }
   }
   prevPass.resolveTarget = std::move(texture);
   prevPass.requireReadyPipelines |= persistentCopy;
   prevPass.resolveRect = rect;
   prevPass.resolveSourceRect = sourceRect;
+  prevPass.resolveViewportWidth = viewportWidth;
+  prevPass.resolveViewportHeight = viewportHeight;
   prevPass.resolveFormat = resolveFormat;
   prevPass.resolveHalfScale = halfScale;
   prevPass.resolveForceOpaqueAlpha = forceOpaqueAlpha;
@@ -646,7 +662,7 @@ void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool cl
       prevPass.resolveTarget, resolveFormat, rect, sourceRect, halfScale,
       prevPass.resolveCopyFilterActive, forceOpaqueAlpha);
   prevPass.resolveNeedsConversion = samplingPlan.needsConversion;
-  prevPass.resolveNeedsShaderSampling = samplingPlan.needsShaderSampling;
+  prevPass.resolveNeedsShaderSampling = samplingPlan.needsShaderSampling || viewportWidth != 0;
   prevPass.resolveLinearSampling = samplingPlan.usesLinearSampling;
   prevPass.snapshotColorResolveSource =
       !gx::is_depth_format(resolveFormat) && (clearColor || clearAlpha || clearDepth);
@@ -1477,6 +1493,8 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
                               ? tex_copy_conv::SampleFilter::Linear
                               : tex_copy_conv::SampleFilter::Nearest,
           .forceOpaqueAlpha = passInfo.resolveForceOpaqueAlpha,
+          .viewportWidth = passInfo.resolveViewportWidth,
+          .viewportHeight = passInfo.resolveViewportHeight,
       };
       if (passInfo.resolveNeedsConversion) {
         tex_copy_conv::run(cmd, convReq);
