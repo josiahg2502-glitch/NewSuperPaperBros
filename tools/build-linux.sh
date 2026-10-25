@@ -33,6 +33,9 @@ echo "copying sources to $work"
 rsync -a --delete "$src/runtime/" "$work/runtime/"
 rsync -a --delete "$root/wiicompiled/aurora-main/" "$work/aurora-main/"
 rsync -a --delete --exclude functions "$src/generated/" "$work/generated/"
+# save_state.cpp includes ../../projects/spm/resumable_functions.inc (found through runtime/include on Windows).
+mkdir -p "$work/projects/spm"
+cp "$root/wiicompiled/projects/spm/resumable_functions.inc" "$work/projects/spm/"
 # The translator wrote absolute Windows paths into the shard list and the data blobs' .incbin lines.
 win=$(wslpath -m "$src")
 grep -rlF "$win" "$work/generated" --include='*.cmake' --include='*.S' --include='*.cpp' --include='*.h' |
