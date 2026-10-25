@@ -1,4 +1,6 @@
 #pragma once
+#include "frontend/runtime_mode.h"
+#include "save_state_resume.h"
 #include "memory.h"
 #include "ppc_runtime.h"
 #include "system_bridge.h"
@@ -635,6 +637,7 @@ inline void InvokeIndirectJump(uint32_t target, CpuContext* ctx) {
     // Same artifact set as RuntimeCrash::FatalMissingGuestTarget, which is this
     // path's sibling for indirect *calls*: MarkFatalErrorReported below stops the
     // atexit reporter, so the crash log has to be written here.
+    if (RuntimeFrontend::Active()) RuntimeFrontend::Fail(message.str().c_str());
     RuntimeCrash::WriteCrashArtifacts("missing_jump_target", message.str(), &target);
     SetRuntimeExitCode(EXIT_FAILURE);
     ShowRuntimeFatalPopup("Missing indirect jump target", message.str());

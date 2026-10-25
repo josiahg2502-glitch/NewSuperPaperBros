@@ -2,6 +2,7 @@
 // <nand_root>\title\00010000\534d4e45\data\... on the host.
 
 #include "nand_internal.h"
+#include "save_state.h"
 
 #include "isa/big_endian.h"
 #include "hle/storage/riivolution.h"
@@ -13,7 +14,7 @@
 
 // Base path for the host Wii NAND directory (resolved at runtime).
 static std::filesystem::path g_dolphinWiiBase;
-static std::once_flag g_dolphinWiiBaseOnce;
+static std::mutex g_dolphinWiiBaseMutex;
 
 // ============================================================================
 // Logging
@@ -54,6 +55,27 @@ int32_t AllocateFd(const std::filesystem::path& path, FILE* file, int32_t mode) 
     return fd;
 }
 
+// Save states: the descriptor counter (the game keeps fds in its memory). Open files are not carried
+// over, so a state can only be captured while none is open; a restore closes the ones opened since.
+bool NAND_HLE_SaveState(SaveState::Writer& out, std::string& error) {
+    std::lock_guard<std::mutex> lock(g_fdMutex);
+    if (!g_fileHandles.empty()) {
+        error = "a NAND file is open";
+        return false;
+    }
+    out.Pod(g_nextFd);
+    return true;
+}
+
+void NAND_HLE_LoadState(SaveState::Reader& in) {
+    std::lock_guard<std::mutex> lock(g_fdMutex);
+    for (auto& [fd, handle] : g_fileHandles) {
+        if (handle.file) std::fclose(handle.file);
+    }
+    g_fileHandles.clear();
+    in.Pod(g_nextFd);
+}
+
 FileHandle* GetHandle(int32_t fd) {
     auto it = g_fileHandles.find(fd);
     if (it == g_fileHandles.end()) {
@@ -89,9 +111,10 @@ std::string CurrentNandDataDir() {
 }
 
 const std::filesystem::path& GetNandBasePath() {
-    std::call_once(g_dolphinWiiBaseOnce, []() {
+    std::lock_guard lock(g_dolphinWiiBaseMutex);
+    if (g_dolphinWiiBase.empty()) {
         g_dolphinWiiBase = RuntimeNandPath::DiscoverNandRootPath();
-    });
+    }
 
     return g_dolphinWiiBase;
 }
@@ -479,4 +502,14 @@ NandFileExtent NandProbeFileExtent(FILE* file) {
     extent.size = std::ftell(file);
     std::fseek(file, extent.position, SEEK_SET);
     return extent;
+}
+
+void NAND_HLE_ResetFrontendFiles() {
+    std::scoped_lock lock(g_fdMutex, g_dolphinWiiBaseMutex);
+    for (auto& [fd, handle] : g_fileHandles) {
+        if (handle.file) std::fclose(handle.file);
+    }
+    g_fileHandles.clear();
+    g_nextFd = 100;
+    g_dolphinWiiBase.clear();
 }

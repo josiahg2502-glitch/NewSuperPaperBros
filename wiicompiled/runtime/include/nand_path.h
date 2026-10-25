@@ -1,4 +1,5 @@
 #pragma once
+#include "frontend/runtime_mode.h"
 
 #include "runtime_config.h"
 #include "nand_settings.h"
@@ -29,6 +30,7 @@ inline std::optional<std::filesystem::path> ExistingDirectory(const std::filesys
 }
 
 [[noreturn]] inline void FailNandRoot(const char* message, const std::filesystem::path& path = {}) {
+    if (RuntimeFrontend::Active()) RuntimeFrontend::Fail(message);
     if (path.empty()) {
         RT_LOGF(RT_TAG_NAND, "ERROR: %s\n", message);
     } else {
@@ -70,7 +72,10 @@ inline std::string GameSaveKey() {
     for (std::filesystem::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
         std::error_code fileError;
         if (it->is_regular_file(fileError)) {
-            const auto relative = std::filesystem::relative(it->path(), root, fileError).generic_u8string();
+            // Lexical first: fs::relative resolves each component on disk (slow on Android storage).
+            std::filesystem::path path = it->path().lexically_relative(root);
+            if (path.empty() || *path.begin() == "..") path = std::filesystem::relative(it->path(), root, fileError);
+            const auto relative = path.generic_u8string();
             files.emplace_back(std::string(relative.begin(), relative.end()), it->file_size(fileError));
         }
     }

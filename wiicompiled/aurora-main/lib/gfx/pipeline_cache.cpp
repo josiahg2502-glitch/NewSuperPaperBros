@@ -576,14 +576,15 @@ static std::string pipeline_cache_seed_path() {
 }
 
 static sqlite3* open_pipeline_cache_seed_db(const std::string& path) {
-  if (!register_sdl_vfs()) {
+  if (!g_config.externalPresentation && !register_sdl_vfs()) {
     Log.warn("Failed to register SDL pipeline cache seed VFS");
     return nullptr;
   }
 
   sqlite3* seedDb = nullptr;
   const auto ret =
-      sqlite3_open_v2(path.c_str(), &seedDb, SQLITE_OPEN_READONLY | SQLITE_OPEN_PRIVATECACHE, SdlVfsName);
+      sqlite3_open_v2(path.c_str(), &seedDb, SQLITE_OPEN_READONLY | SQLITE_OPEN_PRIVATECACHE,
+                      g_config.externalPresentation ? nullptr : SdlVfsName);
   if (ret != SQLITE_OK) {
     if (seedDb != nullptr) {
       sqlite3_close(seedDb);

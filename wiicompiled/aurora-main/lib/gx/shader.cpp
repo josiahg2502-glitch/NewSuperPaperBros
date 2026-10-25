@@ -9,6 +9,7 @@
 #include <dolphin/gx/GXEnum.h>
 
 #include <array>
+#include <regex>
 #include <vector>
 #include <filesystem>
 #include <cstdio>
@@ -359,10 +360,34 @@ static std::string tev_scale_index(GXTevScale scale) {
   }
 }
 
+// TEV inputs that always lie in [0, 1] (texture samples, rasterized colors, konst values and
+// literal constants). tev_overflow wraps in byte space and is the identity there, so it is skipped:
+// on mobile GPUs the per-input wrap is a large share of the fragment cost.
+static bool tev_unit_range(std::string_view expr) {
+  static const std::regex unit(
+      R"(^(vec3f\()?((sampled|rast)\d+\.[rgba]{1,3}|ubuf\.kcolor\d\.[rgba]{1,3}|\(?[0-9]\.0(/8\.0)?\)?|0\.5)\)?$)");
+  return std::regex_match(expr.begin(), expr.end(), unit);
+}
+
+static bool tev_literal(std::string_view expr, std::string_view value) {
+  return expr == value || expr == fmt::format("vec3f({})", value);
+}
+
 static std::string tev_regular_op(GXTevOp op, GXTevBias bias, GXTevScale scale, std::string_view a,
                                   std::string_view b, std::string_view c, std::string_view d,
                                   std::string_view suffix) {
   CHECK(op == GX_TEV_ADD || op == GX_TEV_SUB, "invalid regular tev op {}", underlying(op));
+  // Bit-exact folds of tev_regular_i32 for scale 1 and no bias. With a = b = 0 the lerp term rounds to
+  // zero ((0 + 127/128) >> 8), leaving d. With a = 0, c = 1 (255) and d = 0 the add gives
+  // (256 * b + 128) >> 8 = b. Either way the result is the operand rounded to a byte.
+  if (bias == GX_TB_ZERO && scale == GX_CS_SCALE_1) {
+    if (tev_literal(a, "0.0") && tev_literal(b, "0.0")) {
+      return fmt::format("(round({} * 255.0) / 255.0)", d);
+    }
+    if (op == GX_TEV_ADD && tev_literal(a, "0.0") && tev_literal(c, "1.0") && tev_literal(d, "0.0")) {
+      return fmt::format("(round({} * 255.0) / 255.0)", b);
+    }
+  }
   return fmt::format("tev_regular_{4}({0}, {1}, {2}, {3}, {5}, {6}, {7})", a, b, c, d, suffix,
                      tev_bias_i32(bias), tev_scale_index(scale), op == GX_TEV_SUB ? "true" : "false");
 }
@@ -408,7 +433,9 @@ static std::string tev_op(GXTevOp op, GXTevBias bias, GXTevScale scale, std::str
 
 static std::string tev_color_op(GXTevOp op, GXTevBias bias, GXTevScale scale, bool clamp,
                                 std::string_view a, std::string_view b, std::string_view c, std::string_view d) {
-  const auto overflow = [](std::string_view reg) { return fmt::format("tev_overflow_vec3f({})", reg); };
+  const auto overflow = [](std::string_view reg) {
+    return tev_unit_range(reg) ? std::string(reg) : fmt::format("tev_overflow_vec3f({})", reg);
+  };
   std::string expr = tev_op(op, bias, scale, overflow(a), overflow(b), overflow(c), d, "vec3(0)"sv, "vec3f"sv);
   return clamp ? fmt::format("clamp({}, vec3f(0.0), vec3f(1.0))", expr)
                : fmt::format("clamp({}, vec3f(-1024.0 / 255.0), vec3f(1023.0 / 255.0))", expr);
@@ -431,10 +458,14 @@ static bool alpha_compare_uses_color_inputs(GXTevOp op) noexcept {
 static std::string tev_alpha_op(GXTevOp op, GXTevBias bias, GXTevScale scale, bool clamp,
                                 std::string_view a, std::string_view b, std::string_view c, std::string_view d,
                                 std::string_view colorA, std::string_view colorB) {
-  const auto scalarOverflow = [](std::string_view reg) { return fmt::format("tev_overflow_f32({})", reg); };
+  const auto scalarOverflow = [](std::string_view reg) {
+    return tev_unit_range(reg) ? std::string(reg) : fmt::format("tev_overflow_f32({})", reg);
+  };
   std::string expr;
   if (alpha_compare_uses_color_inputs(op)) {
-    const auto colorOverflow = [](std::string_view reg) { return fmt::format("tev_overflow_vec3f({})", reg); };
+    const auto colorOverflow = [](std::string_view reg) {
+      return tev_unit_range(reg) ? std::string(reg) : fmt::format("tev_overflow_vec3f({})", reg);
+    };
     // GX alpha compares R8/GR16/BGR24 using the color combiner's A/B inputs, while C and D remain the scalar alpha-combiner inputs.
     expr = tev_op(op, bias, scale, colorOverflow(colorA), colorOverflow(colorB), scalarOverflow(c), d, "0.0"sv,
                   "f32"sv);

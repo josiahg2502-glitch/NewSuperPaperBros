@@ -76,6 +76,7 @@ void shutdown();
 // Device-loss callbacks may run on a Dawn-managed thread and only publish loss state; frame
 // threads call this at ordered boundaries to turn it into the one user-visible fatal error.
 void fail_if_device_lost() noexcept;
+bool device_lost() noexcept;
 void release_surface() noexcept;
 bool refresh_surface(bool recreate = true);
 // NSMBW: V-Sync (Fifo) on or off; the change is applied by take_vsync_change at a frame boundary.

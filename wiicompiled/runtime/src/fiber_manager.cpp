@@ -1,4 +1,6 @@
+#include "save_state.h"
 #include "fiber_manager.h"
+#include "frontend/runtime_mode.h"
 #include "memory.h"
 #include "abi_bridge.h"
 #include "hle_stubs.h"
@@ -21,6 +23,7 @@ std::mutex GuestFiberManager::s_mutex;
 std::unordered_map<uint32_t, GuestFiber> GuestFiberManager::s_fibers;
 std::vector<void*> GuestFiberManager::s_fibersPendingDelete;
 void* GuestFiberManager::s_schedulerFiber = nullptr;
+bool GuestFiberManager::s_schedulerFiberRebuilt = false;
 uint32_t GuestFiberManager::s_currentGuestThread = 0;
 bool GuestFiberManager::s_initialized = false;
 thread_local CpuContext* GuestFiberManager::s_cpuContext = nullptr;
@@ -209,13 +212,36 @@ void GuestFiberManager::Shutdown() {
         }
     }
     s_fibers.clear();
-
-    if (s_schedulerFiber) {
-        HostContext::ShutdownScheduler(s_schedulerFiber);
-        s_schedulerFiber = nullptr;
+    for (void* fiber : s_fibersPendingDelete) {
+        if (fiber && !HostContext::IsCurrent(fiber)) HostContext::Destroy(fiber);
     }
+    s_fibersPendingDelete.clear();
+    s_currentGuestThread = 0;
+    s_cpuContext = nullptr;
+    g_viRetracePendingCount = 0;
+
+    // After a save-state rebuild the scheduler fiber is a context the frontend created and destroys.
+    if (s_schedulerFiber && !s_schedulerFiberRebuilt) {
+        HostContext::ShutdownScheduler(s_schedulerFiber);
+    }
+    s_schedulerFiber = nullptr;
+    s_schedulerFiberRebuilt = false;
 
     s_initialized = false;
+}
+
+void GuestFiberManager::CancelFrontendFibers() {
+    std::vector<void*> handles;
+    {
+        std::lock_guard lock(s_mutex);
+        for (auto& [address, fiber] : s_fibers) {
+            if (fiber.fiber && !fiber.isSchedulerFiber && !fiber.terminated)
+                handles.push_back(fiber.fiber);
+        }
+    }
+    for (void* handle : handles) {
+        try { HostContext::Switch(handle); } catch (const RuntimeFrontend::Cancelled&) {}
+    }
 }
 
 bool GuestFiberManager::IsInitialized() {
@@ -413,6 +439,7 @@ void GuestFiberManager::SwitchToThread(uint32_t guestThreadAddr, CpuContext* cpu
 
     // Switch to the target fiber (the target fiber will load its own context)
     HostContext::Switch(fiberHandle);
+    RuntimeFrontend::CheckCancellation();
 
     // When we return here, the fiber that issued SwitchToThread has resumed.
     // That does not automatically mean the previous guest thread became runnable
@@ -467,6 +494,14 @@ GuestFiber* GuestFiberManager::GetFiber(uint32_t guestThreadAddr) {
 bool GuestFiberManager::HasFiber(uint32_t guestThreadAddr) {
     std::lock_guard<std::mutex> lock(s_mutex);
     return s_fibers.count(guestThreadAddr) > 0;
+}
+
+bool GuestFiberManager::ForEachFiber(
+    void (*visit)(uint32_t guestThreadAddr, const GuestFiber& fiber, bool current, void* user), void* user) {
+    std::unique_lock<std::mutex> lock(s_mutex, std::try_to_lock);
+    if (!lock.owns_lock()) return false;
+    for (const auto& [thread, fiber] : s_fibers) visit(thread, fiber, thread == s_currentGuestThread, user);
+    return true;
 }
 
 void GuestFiberManager::DumpGuestThreads(std::ostream& os) {
@@ -529,6 +564,7 @@ bool GuestFiberManager::RegisterMainThreadAsFiber(uint32_t guestThreadAddr, CpuC
     gf.state = ThreadState::RUNNING;
     gf.terminated = false;
     gf.isSchedulerFiber = true;  // This is special - it's both scheduler AND main thread
+    gf.started = true;
     
     // Copy current CPU context
     if (cpu) {
@@ -584,6 +620,7 @@ void GuestFiberManager::FiberProc(void* param)
         fiber = &it->second;
         entryPoint = fiber->entryPoint;
         entryArg = fiber->entryArg;
+        fiber->started = true;
     }
     
     // Get the CPU context
@@ -630,12 +667,28 @@ void GuestFiberManager::FiberProc(void* param)
     // Call the translated thread entry function
     const auto* info = TranslatedFunctionRegistry::FindByAddressPtr(entryPoint);
     if (info) {
-        InvokeIndirectCpu(entryPoint, cpu);
+        try {
+            RuntimeFrontend::CheckCancellation();
+            InvokeIndirectCpu(entryPoint, cpu);
+        } catch (const RuntimeFrontend::Cancelled&) {
+            // Cooperative frontend cancellation unwinds this fiber's native stack.
+        } catch (const std::exception& error) {
+            if (!RuntimeFrontend::Active()) throw;
+            RT_LOGF(RT_TAG_RUNTIME, "Guest fiber failed: %s\n", error.what());
+            try { RuntimeFrontend::Fail(error.what()); } catch (const RuntimeFrontend::Cancelled&) {}
+        }
     } else {
         RT_LOG(RT_TAG_OS) << "Thread entry 0x" << std::hex << entryPoint
                   << " not found in registry!" << std::dec << std::endl;
     }
     
+    FinishGuestThread(guestThreadAddr);
+    // Return to scheduler
+    HostContext::Switch(s_schedulerFiber);
+}
+
+void GuestFiberManager::FinishGuestThread(uint32_t guestThreadAddr)
+{
     // Thread entry functions normally return into OSExitThread on hardware.
     // Our host fiber call boundary observes the return directly, so complete the
     // guest OSThread lifecycle here before handing control back to the scheduler.
@@ -673,8 +726,112 @@ void GuestFiberManager::FiberProc(void* param)
         s_currentGuestThread = 0;
     }
     
-    // Return to scheduler
+}
+
+// Save states: a restored thread's fiber. It first runs when another thread switches to it (or, for
+// the thread that was idling, when the frontend resumes the guest); it rebuilds the thread's native
+// stack through its chain's resume entries down to the HLE wait, which continues after its sleep.
+void GuestFiberManager::ResumeProc(void* param)
+{
+    const uint32_t guestThreadAddr = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(param));
+    CpuContext* cpu = s_cpuContext ? s_cpuContext : &GetPersistentCpuContext();
+    CpuContextScope scope(cpu);
+    const uint32_t root = SaveState::BeginResume(guestThreadAddr);
+    try {
+        RuntimeFrontend::CheckCancellation();
+        InvokeIndirectCpu(root, cpu);
+    } catch (const RuntimeFrontend::Cancelled&) {
+    } catch (const std::exception& error) {
+        if (!RuntimeFrontend::Active()) throw;
+        RT_LOGF(RT_TAG_RUNTIME, "Guest fiber failed: %s\n", error.what());
+        try { RuntimeFrontend::Fail(error.what()); } catch (const RuntimeFrontend::Cancelled&) {}
+    }
+    FinishGuestThread(guestThreadAddr);
     HostContext::Switch(s_schedulerFiber);
+}
+
+void GuestFiberManager::CompleteSwitchIn(uint32_t guestThreadAddr, CpuContext* cpu)
+{
+    // As SwitchToThread after its HostContext::Switch, with this thread as the one that switched out.
+    std::lock_guard<std::mutex> lock(s_mutex);
+    uint32_t runningContext = 0, currentContext = 0;
+    Memory::TryRead32(kOSRunningContextAddr, runningContext);
+    Memory::TryRead32(kOSCurrentContextAddr, currentContext);
+    auto it = s_fibers.find(guestThreadAddr);
+    if (it == s_fibers.end()) return;
+    if (runningContext == guestThreadAddr && currentContext == guestThreadAddr) {
+        if (cpu) {
+            *cpu = it->second.cpuContext;
+            MkwApplyHostNiMode(cpu->fpscr);
+        }
+        it->second.state = ThreadState::RUNNING;
+        s_currentGuestThread = guestThreadAddr;
+    } else {
+        if (cpu) {
+            *cpu = it->second.cpuContext;
+            MkwApplyHostNiMode(cpu->fpscr);
+        }
+        s_currentGuestThread = 0;
+    }
+}
+
+bool GuestFiberManager::RebuildForRestore(const std::vector<FiberRecord>& table, void* boot, void (*bootRoot)(void*),
+                                          uint32_t runningThread, void** newBoot, void** newRunning)
+{
+    std::lock_guard<std::mutex> lock(s_mutex);
+    *newBoot = *newRunning = nullptr;
+    // Drop every live host context (the frontend destroys its boot context), then recreate the saved table's.
+    for (auto& [thread, fiber] : s_fibers) {
+        if (fiber.fiber && fiber.fiber != boot) HostContext::Destroy(fiber.fiber);
+    }
+    s_fibers.clear();
+    for (const FiberRecord& record : table) {
+        GuestFiber fiber;
+        fiber.entryPoint = record.entryPoint;
+        fiber.entryArg = record.entryArg;
+        fiber.cpuContext = record.cpuContext;
+        fiber.state = record.state;
+        fiber.isSchedulerFiber = record.isSchedulerFiber;
+        fiber.terminated = record.terminated;
+        fiber.started = record.started;
+        if (!record.terminated) {
+            constexpr size_t kHostStackSize = 1024 * 1024;
+            void* argument = reinterpret_cast<void*>(static_cast<uintptr_t>(record.thread));
+            fiber.fiber = record.isSchedulerFiber
+                              ? HostContext::Create(4 * 1024 * 1024, bootRoot, nullptr)
+                              : HostContext::Create(kHostStackSize, record.started ? ResumeProc : FiberProc, argument);
+            if (!fiber.fiber) return false;
+            if (record.isSchedulerFiber) {
+                *newBoot = fiber.fiber;
+                s_schedulerFiber = fiber.fiber;
+                s_schedulerFiberRebuilt = true;
+            }
+            if (record.thread == runningThread) *newRunning = fiber.fiber;
+        }
+        s_fibers.emplace(record.thread, std::move(fiber));
+    }
+    s_currentGuestThread = runningThread;
+    return *newBoot != nullptr && *newRunning != nullptr;
+}
+
+void GuestFiberManager::ExportTable(std::vector<FiberRecord>& table, uint32_t& currentThread)
+{
+    std::lock_guard<std::mutex> lock(s_mutex);
+    table.clear();
+    for (const auto& [thread, fiber] : s_fibers) {
+        FiberRecord record;
+        record.thread = thread;
+        record.entryPoint = fiber.entryPoint;
+        record.entryArg = fiber.entryArg;
+        record.cpuContext = fiber.cpuContext;
+        record.state = fiber.state;
+        record.isSchedulerFiber = fiber.isSchedulerFiber;
+        record.terminated = fiber.terminated;
+        record.started = fiber.started;
+        table.push_back(record);
+    }
+    std::sort(table.begin(), table.end(), [](const FiberRecord& a, const FiberRecord& b) { return a.thread < b.thread; });
+    currentThread = s_currentGuestThread;
 }
 
 } // namespace Fiber

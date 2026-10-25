@@ -329,6 +329,11 @@ else()
     add_executable(WiiCompiled "${MKW_BASE_PRODUCT_SOURCE}" ${MKW_BASE_REGISTRATION_SOURCES})
 endif()
 mkw_configure_product(WiiCompiled)
+if(MKW_FRONTEND_DIAGNOSTIC)
+    target_compile_definitions(mkw_runtime_common PRIVATE MKW_FRONTEND_DIAGNOSTIC)
+    target_sources(mkw_runtime_common PRIVATE "${MKW_RUNTIME_SOURCE_DIR}/frontend/host_diagnostic.cpp")
+    target_link_libraries(mkw_runtime_common PRIVATE dawn::webgpu_dawn)
+endif()
 if(MKW_PLATFORM_WINDOWS AND MKW_ENGINE_MODULE)
     set_target_properties(WiiCompiled PROPERTIES OUTPUT_NAME "${MKW_ENGINE_MODULE_NAME}" PREFIX "")
     target_compile_definitions(mkw_runtime_common PRIVATE MKW_ENGINE_MODULE)  # main.cpp exports SDL_main instead of main
@@ -337,6 +342,32 @@ if(MKW_PLATFORM_WINDOWS AND MKW_ENGINE_MODULE)
     set_target_properties(WiiCompiledLoader PROPERTIES OUTPUT_NAME WiiCompiled WIN32_EXECUTABLE TRUE)
     target_link_libraries(WiiCompiledLoader PRIVATE user32)
 endif()
+if(MKW_BUILD_LIBRETRO)
+    add_library(spm_libretro SHARED
+        "${MKW_RUNTIME_SOURCE_DIR}/frontend/libretro_core.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/frontend/adapters.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/frontend/disc_image.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/frontend/prepare_screen.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/frontend/bridge.cpp"
+        "${MKW_RUNTIME_SOURCE_DIR}/frontend/renderer.cpp"
+        "${MKW_BASE_PRODUCT_SOURCE}" ${MKW_BASE_REGISTRATION_SOURCES})
+    mkw_configure_product(spm_libretro)
+    if(TARGET mkw_base_sensitive)
+        target_sources(spm_libretro PRIVATE $<TARGET_OBJECTS:mkw_base_sensitive>)
+    endif()
+    target_compile_definitions(spm_libretro PRIVATE VK_USE_PLATFORM_ANDROID_KHR)
+    target_link_libraries(spm_libretro PRIVATE dawn::webgpu_dawn vulkan)
+    target_include_directories(spm_libretro PRIVATE
+        "${MKW_RUNTIME_SOURCE_DIR}/frontend"
+        "${MKW_RUNTIME_SOURCE_DIR}/frontend/third_party")
+    set_target_properties(spm_libretro PROPERTIES OUTPUT_NAME spm_libretro PREFIX ""
+        CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+    set(_spm_exports "${MKW_RUNTIME_SOURCE_DIR}/frontend/libretro.exports")
+    target_link_options(spm_libretro PRIVATE
+        "LINKER:--version-script=${_spm_exports}" "LINKER:--exclude-libs,ALL")
+    set_property(TARGET spm_libretro APPEND PROPERTY LINK_DEPENDS "${_spm_exports}")
+endif()
+
 target_precompile_headers(WiiCompiled PRIVATE
     "${MKW_RUNTIME_SOURCE_DIR}/include/mkw_pch.h")
 if(MKW_PLATFORM_WINDOWS)
@@ -380,7 +411,8 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
 elseif(MKW_PLATFORM_ANDROID)
     # Cross-compiled, so -mcpu=native would describe the build machine. ARMv8.2-A (LSE atomics,
     # RCpc loads) is the floor of every Android phone since Cortex-A55/A75.
-    set(MKW_BASELINE_ARCH_FLAG -march=armv8.2-a)
+    set(MKW_ANDROID_ARCH "armv8.2-a" CACHE STRING "Android ARM ISA floor (armv8-a for older devices)")
+    set(MKW_BASELINE_ARCH_FLAG "-march=${MKW_ANDROID_ARCH}")
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
     set(MKW_BASELINE_ARCH_FLAG -mcpu=native)
 else()
@@ -389,7 +421,7 @@ endif()
 
 set(MKW_ALL_BUILD_TARGETS
     mkw_runtime_common mkw_base_shared mkw_base_sensitive mkw_retro_sensitive
-    mkw_retro_rewind_functions WiiCompiled RetroRewind)
+    mkw_retro_rewind_functions WiiCompiled RetroRewind spm_libretro)
 foreach(target IN LISTS MKW_ALL_BUILD_TARGETS)
     if(TARGET ${target} AND MKW_BASELINE_ARCH_FLAG)
         target_compile_options(${target} PRIVATE ${MKW_BASELINE_ARCH_FLAG})

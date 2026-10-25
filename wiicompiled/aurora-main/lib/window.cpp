@@ -490,6 +490,7 @@ void show_window() {
 }
 
 bool initialize() {
+  if (g_config.externalPresentation) return true;
   /* We don't want to initialize anything input related here, otherwise the add events will get lost to the void */
   TRY(SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight"), "Error setting {}: {}", SDL_HINT_ORIENTATIONS,
       SDL_GetError());
@@ -514,18 +515,35 @@ bool initialize() {
 }
 
 bool initialize_event_watch() {
+  if (g_config.externalPresentation) return true;
   TRY(SDL_AddEventWatch(lifecycle_event_watch, nullptr), "Error adding SDL event watch: {}", SDL_GetError());
   return true;
 }
 
 void shutdown() {
+  g_frameBufferScale = 0.f;
+  g_frameBufferLines = 0.f;
+  g_frameBufferAspectFit = true;
+  g_fixedAspect.store(0.f);
+  g_presentSurfaceFill = false;
+  g_presentAspectWidth = g_presentAspectHeight = 0;
+  g_windowSize = {};
+  g_events.clear();
+  g_backgrounded = false;
+  g_nativeResizePending = false;
+  if (g_config.externalPresentation) return;
   SDL_RemoveEventWatch(lifecycle_event_watch, nullptr);
   destroy_window();
-  TRY_WARN(SDL_EnableScreenSaver(), "Error enabling screensaver: {}", SDL_GetError());
+  if (!g_config.externalPresentation) TRY_WARN(SDL_EnableScreenSaver(), "Error enabling screensaver: {}", SDL_GetError());
   SDL_Quit();
 }
 
 AuroraWindowSize get_window_size() {
+  if (g_config.externalPresentation) {
+    const uint32_t w = std::max(1u, g_config.windowWidth);
+    const uint32_t h = std::max(1u, g_config.windowHeight);
+    return {w, h, w, h, w, h, 1.f};
+  }
   int width = 0;
   int height = 0;
   int native_fb_w = 0;
@@ -606,6 +624,7 @@ SDL_Window* get_sdl_window() { return g_window; }
 SDL_Renderer* get_sdl_renderer() { return g_renderer; }
 
 bool is_paused() noexcept {
+  if (g_config.externalPresentation) return false;
   if (!is_presentable()) {
     return true;
   }
@@ -622,11 +641,13 @@ bool is_paused() noexcept {
 }
 
 bool is_presentable() noexcept {
+  if (g_config.externalPresentation) return true;
   return g_window != nullptr && !g_backgrounded.load(std::memory_order_acquire) &&
          g_surfaceReady.load(std::memory_order_acquire);
 }
 
 void pump_events() noexcept {
+  if (g_config.externalPresentation) return;
   if (g_window != nullptr) {
     SDL_SyncWindow(g_window);
   }

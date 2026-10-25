@@ -1,4 +1,5 @@
 #include "det_clock.h"
+#include "frontend/runtime_mode.h"
 
 #include "runtime_log.h"
 #include "timebase_contract.h"
@@ -85,6 +86,8 @@ void Enable() noexcept {
     }
 }
 
+void Reset() noexcept { detail::g_enabled = false; g_now.store(0); g_anchored = false; }
+
 uint64_t Now() noexcept {
     return g_now.load(std::memory_order_relaxed);
 }
@@ -100,6 +103,7 @@ void AdvanceTo(uint64_t ticks) noexcept {
 }
 
 void PaceTo(uint64_t ticks) {
+    if (RuntimeFrontend::Active()) return;
     const auto now = Clock::now();
     if (!g_anchored || ticks < g_anchorTicks) {
         g_anchored = true;
@@ -119,6 +123,11 @@ void PaceTo(uint64_t ticks) {
 }
 
 void ResetPacing() noexcept {
+    g_anchored = false;
+}
+
+void RestoreNow(uint64_t ticks) noexcept {
+    g_now.store(ticks, std::memory_order_relaxed);
     g_anchored = false;
 }
 

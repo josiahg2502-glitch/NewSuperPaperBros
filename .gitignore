@@ -8,6 +8,9 @@
 /autotest/
 /build-logs/
 /dist/
+/out/
+/resources/
+.DS_Store
 /UserData/
 /_to_delete/
 /extras/

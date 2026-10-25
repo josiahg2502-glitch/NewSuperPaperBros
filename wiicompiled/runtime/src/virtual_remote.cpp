@@ -6,6 +6,7 @@
 #include "runtime_config.h"
 #include "memory.h"
 #include "runtime_log.h"
+#include "save_state.h"
 #include "wii_remote_input.h"
 
 #include <aurora/aurora.h>
@@ -81,13 +82,6 @@ std::atomic<bool> g_touchShake{false};
 std::atomic<bool> g_touchShakeSinceRead{false};
 std::atomic<float> g_touchTilt{0.0f};
 
-// In one of SPM's arcade minigames (maps mg*: Forget Me Not, Mansion Patrol, Tilt Island ...)? The map name sits at
-// +0x44 of the spmario globals (gp).
-bool InArcade() {
-    uint32_t gp = 0;
-    return Memory::TryRead32(0x8056D198u, gp) && Memory::Contains(gp, 0x48) && Memory::Read8(gp + 0x44) == 'm' &&
-           Memory::Read8(gp + 0x45) == 'g';
-}
 
 std::mutex g_mutex;
 std::array<PADStatus, PAD_MAX_CONTROLLERS> g_pads{};
@@ -406,6 +400,14 @@ void AnnounceLocked(uint32_t chan, bool pad) {
 
 } // namespace
 
+// In one of SPM's arcade minigames (maps mg*: Forget Me Not, Mansion Patrol, Tilt Island ...)? The map name sits at
+// +0x44 of the spmario globals (gp).
+bool InArcade() {
+    uint32_t gp = 0;
+    return Memory::TryRead32(0x8056D198u, gp) && Memory::Contains(gp, 0x48) && Memory::Read8(gp + 0x44) == 'm' &&
+           Memory::Read8(gp + 0x45) == 'g';
+}
+
 void SetTouchState(uint32_t touchButtons, bool shake, float tilt) {
     g_touchButtons.store(touchButtons, std::memory_order_relaxed);
     g_touchButtonsSinceRead.fetch_or(touchButtons, std::memory_order_relaxed);
@@ -564,4 +566,13 @@ bool Sample(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
 
 uint32_t LastButtons() { return g_lastButtons.load(std::memory_order_relaxed); }
 
+// Save states: the per-port shake and tilt motion (the rest is read live from the pads each frame).
+void SaveState(::SaveState::Writer& out) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    out.Pod(g_motion);
+}
+void LoadState(::SaveState::Reader& in) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    in.Pod(g_motion);
+}
 } // namespace VirtualRemote

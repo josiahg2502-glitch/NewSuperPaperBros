@@ -36,7 +36,18 @@ void AudioBackend::SetMuted(bool muted) {
     ApplyGainLocked();
 }
 
+void AudioBackend::SetFrontendSink(RuntimeFrontend::PcmSink sink, void* opaque) {
+    std::lock_guard lock(m_mutex);
+    m_frontendSink = sink;
+    m_frontendOpaque = opaque;
+}
+
 bool AudioBackend::EnsureInitializedLocked(uint32_t sampleRate, uint32_t channels) {
+    if (m_frontendSink) {
+        if (channels != 2 || (sampleRate != 32000 && sampleRate != 48000)) return false;
+        m_sampleRate = sampleRate; m_channels = channels; m_initialized = true;
+        return true;
+    }
     if (m_initialized && m_sampleRate == sampleRate && m_channels == channels) {
         return true;
     }
@@ -93,7 +104,7 @@ void AudioBackend::Shutdown() {
         SDL_DestroyAudioStream(m_stream);
         m_stream = nullptr;
     }
-    if (m_initialized) {
+    if (m_initialized && !m_frontendSink) {
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
     }
     m_initialized = false;
@@ -143,7 +154,7 @@ bool AudioBackend::PushWiiAiSamplesBE16(const uint8_t* data, size_t bytes) {
     }
 
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (!m_initialized || !m_stream) {
+    if (!m_initialized || (!m_stream && !m_frontendSink)) {
         return false;
     }
 
@@ -168,6 +179,12 @@ bool AudioBackend::PushWiiAiSamplesBE16(const uint8_t* data, size_t bytes) {
         m_convertBuffer[frame * 2 + 1] = static_cast<int16_t>(right);
     }
 
+    if (m_frontendSink) {
+        const float gain = EffectiveGainLocked();
+        for (size_t i = 0; i < frameCount * 2; ++i)
+            m_convertBuffer[i] = static_cast<int16_t>(m_convertBuffer[i] * gain);
+        return m_frontendSink(m_frontendOpaque, m_convertBuffer.data(), frameCount, m_sampleRate) == frameCount;
+    }
     const int lenBytes = static_cast<int>(frameCount * 2 * sizeof(int16_t));
     if (!QueueHasCapacityLocked(lenBytes)) {
         return true;
@@ -186,10 +203,17 @@ bool AudioBackend::PushSamplesLE16(const int16_t* samples, size_t sampleCount) {
     }
 
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (!m_initialized || !m_stream) {
+    if (!m_initialized || (!m_stream && !m_frontendSink)) {
         return false;
     }
 
+    if (m_frontendSink) {
+        const size_t frames = sampleCount / 2;
+        m_convertBuffer.assign(samples, samples + frames * 2);
+        const float gain = EffectiveGainLocked();
+        for (auto& value : m_convertBuffer) value = static_cast<int16_t>(value * gain);
+        return m_frontendSink(m_frontendOpaque, m_convertBuffer.data(), frames, m_sampleRate) == frames;
+    }
     const int lenBytes = static_cast<int>(sampleCount * sizeof(int16_t));
     if (!QueueHasCapacityLocked(lenBytes)) {
         return true;

@@ -1,3 +1,4 @@
+#include "frontend/runtime_mode.h"
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -80,6 +81,7 @@
 #include "hle_stubs.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
+#include "platform/host_platform.h"
 #include "runtime_product.h"
 #include "recomp_mod_loader.h"
 #include <aurora/aurora.h>
@@ -797,6 +799,10 @@ void MarkFatalErrorReported() {
 }
 
 void ShowRuntimeFatalPopup(std::string_view category, std::string_view details) noexcept {
+    if (RuntimeFrontend::Active()) {
+        RT_LOGF(RT_TAG_RUNTIME, "Frontend fatal: %.*s: %.*s\n", int(category.size()), category.data(), int(details.size()), details.data());
+        return;
+    }
     if (g_fatalPopupShown.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
@@ -846,7 +852,12 @@ void WriteCrashArtifacts(std::string_view reason, std::string_view extraDetails,
     }
 }
 
-[[noreturn]] void FatalMissingGuestTarget(uint32_t target, CpuContext* cpu) noexcept {
+[[noreturn]] void FatalMissingGuestTarget(uint32_t target, CpuContext* cpu) {
+    if (RuntimeFrontend::Active()) {
+        std::ostringstream error;
+        error << "Missing guest function 0x" << std::hex << target << " (LR 0x" << (cpu ? cpu->lr : 0) << ")";
+        RuntimeFrontend::Fail(error.str().c_str());
+    }
     RT_LOG(RT_TAG_RUNTIME) << "InvokeIndirectCpu: target 0x" << std::hex << target
               << " not translated (missing function)" << std::dec << std::endl;
     RT_LOG(RT_TAG_RUNTIME) << "Caller LR = 0x" << std::hex << (cpu ? cpu->lr : 0u)
@@ -1362,7 +1373,14 @@ static void TerminateHandler() {
 }
 
 // Runtime entry point: loads the configuration, brings up aurora and runs the game.
+#if defined(MKW_FRONTEND_DIAGNOSTIC)
+int RunFrontendDiagnostic(int argc, char** argv);
+#endif
 int RuntimeMain(int argc, char** argv) {
+#if defined(MKW_FRONTEND_DIAGNOSTIC)
+    if (argc > 1 && std::string_view(argv[1]) == "--frontend-diagnostic")
+        return RunFrontendDiagnostic(argc, argv);
+#endif
     // Must run before the transcript duplicates stdout/stderr: it decides what
     // those descriptors are mirrored to now that the products are GUI-subsystem.
     AttachParentConsoleForDiagnostics();
@@ -1386,6 +1404,10 @@ int RuntimeMain(int argc, char** argv) {
             throw std::invalid_argument("The game runtime does not accept command-line options; use Config.toml through the installed host.");
         }
         RuntimeConfigFile::LogLoadedConfig();
+#if defined(__ANDROID__)
+        if (const auto line = RuntimePlatform::PinCurrentThreadToFastCores(); !line.empty())
+            RT_LOGF(RT_TAG_RUNTIME, "fast cores %s\n", line.c_str());
+#endif
         // The player's own extracted game (game_folder.h); on Windows it is asked for at first start.
         if (!GameFolder::EnsureConfigured()) {
             SetRuntimeExitCodeImpl(0);

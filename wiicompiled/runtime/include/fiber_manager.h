@@ -47,6 +47,15 @@ struct GuestFiber {
     ThreadState state = ThreadState::READY;
     bool isSchedulerFiber = false;      // True for the main scheduler fiber
     bool terminated = false;            // Thread has exited
+    bool started = false;               // Its fiber has run (save states rebuild started threads)
+};
+
+// Save states: one guest thread's fiber bookkeeping, without its host context.
+struct FiberRecord {
+    uint32_t thread = 0, entryPoint = 0, entryArg = 0;
+    CpuContext cpuContext{};
+    ThreadState state = ThreadState::READY;
+    bool isSchedulerFiber = false, terminated = false, started = false;
 };
 
 class GuestFiberManager {
@@ -56,6 +65,8 @@ public:
     
     // Shutdown the fiber system
     static void Shutdown();
+    // Unwind suspended guest stacks while frontend cancellation is active.
+    static void CancelFrontendFibers();
     
     // Check if fiber system is initialized
     static bool IsInitialized();
@@ -99,6 +110,22 @@ public:
     // a watchdog can call it while guest code holds the fiber mutex without deadlocking.
     static void DumpGuestThreads(std::ostream& os);
     static bool IsTerminated(uint32_t guestThreadAddr);
+    // Save states. The bookkeeping SwitchToThread does once the switched-out thread runs again, for a
+    // restored thread whose rebuilt fiber is starting there.
+    static void CompleteSwitchIn(uint32_t guestThreadAddr, CpuContext* cpu);
+    // The boot thread's own host context: Initialize, run on the boot fiber, makes a new one for it.
+    static void* SchedulerFiber() { return s_schedulerFiber; }
+    // Replace every live fiber's host context: started threads get a resume root (their continuation
+    // was queued with SaveState::SetPendingResume), unstarted ones start afresh, and the boot thread
+    // (isSchedulerFiber; `boot` is the frontend's own handle to its stack) gets `bootRoot`. Returns the
+    // new contexts of the boot and running threads.
+    static bool RebuildForRestore(const std::vector<FiberRecord>& table, void* boot, void (*bootRoot)(void*),
+                                  uint32_t runningThread, void** newBoot, void** newRunning);
+    // Save states: every guest thread's record (sorted by thread) and the current guest thread.
+    static void ExportTable(std::vector<FiberRecord>& table, uint32_t& currentThread);
+    // Save states: every fiber; try_lock, false when busy.
+    static bool ForEachFiber(void (*visit)(uint32_t guestThreadAddr, const GuestFiber& fiber, bool current, void* user),
+                             void* user);
 
 private:
     // The fiber entry point wrapper
@@ -107,6 +134,8 @@ private:
 #else
     static void FiberProc(void* param);
 #endif
+    static void ResumeProc(void* param);
+    static void FinishGuestThread(uint32_t guestThreadAddr);
     // Switch from whichever fiber is currently active straight to the scheduler fiber, without
     // the SwitchToThread bookkeeping (CPU context save/restore, s_currentGuestThread). Used for
     // in-fiber yields that aren't a real guest thread switch: waiting out the EGG::Thread::start
@@ -120,6 +149,7 @@ private:
     // The scheduler's own host context. Its opaque handle is supplied by the
     // active HostContext backend, so one field serves every supported host.
     static void* s_schedulerFiber;
+    static bool s_schedulerFiberRebuilt;  // s_schedulerFiber came from RebuildForRestore
     static uint32_t s_currentGuestThread;
     static bool s_initialized;
     // Stored CPU context pointer for fiber switches

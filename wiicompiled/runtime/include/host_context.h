@@ -18,6 +18,7 @@ void ShutdownScheduler(Handle scheduler);
 
 Handle Create(std::size_t stackSize, Entry entry, void* argument);
 void Destroy(Handle context);
+Handle Current();
 bool IsCurrent(Handle context);
 void Switch(Handle target);
 

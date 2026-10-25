@@ -226,6 +226,7 @@ int RunEmitBuildShards(string[] argsTail)
     var nativeSources = OptionValue(argsTail, "--native-source-dir") ?? Path.Combine(root, "runtime", "src");
     var resolvedProfile = OptionValue(argsTail, "--resolved-profile");
     var retroCpp = OptionValue(argsTail, "--retro-cpp-dir");
+    var resumable = OptionValue(argsTail, "--resumable-functions");
 
     try
     {
@@ -238,7 +239,8 @@ int RunEmitBuildShards(string[] argsTail)
             nativeSourcePath,
             string.IsNullOrWhiteSpace(resolvedProfile) ? null : Path.GetFullPath(resolvedProfile),
             string.IsNullOrWhiteSpace(retroCpp) ? null : Path.GetFullPath(retroCpp),
-            NativeIndex: nativeIndex));
+            NativeIndex: nativeIndex,
+            ResumableFunctions: string.IsNullOrWhiteSpace(resumable) ? null : ResumableFunctionRewriter.LoadList(resumable)));
         Console.WriteLine("[translator] emitted stable translated build graph");
         Console.WriteLine($"  base functions: {result.BaseFunctionCount:N0}");
         Console.WriteLine($"  shared base functions: {result.SharedBaseFunctionCount:N0}");
@@ -3654,6 +3656,7 @@ static (string? Positional, CommandOption[] Options)? CommandSpec(string command
         new("--native-source-dir", "path"),
         new("--resolved-profile", "path"),
         new("--retro-cpp-dir", "path"),
+        new("--resumable-functions", "path"),
         new("--out", "generated/build_shards")
     }),
     _ => null

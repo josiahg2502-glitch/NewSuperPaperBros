@@ -7,7 +7,8 @@ android {
     compileSdk 34
 
     defaultConfig {
-        applicationId 'com.wither.nsmbw'
+        // Its own id, so it installs beside the NSMBW port; the Java package (JNI names) stays.
+        applicationId 'com.wiicompiled.spm'
         // Guest RAM uses memfd_create, which bionic has from Android 11 (API 30).
         minSdk 30
         targetSdk 34

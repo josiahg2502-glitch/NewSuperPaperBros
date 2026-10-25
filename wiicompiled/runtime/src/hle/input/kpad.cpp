@@ -1,4 +1,5 @@
 #include "settings_overlay.h"
+#include "save_state.h"
 #include "netplay_ui.h"
 #include "frame_input.h"
 #include "hle_stubs.h"
@@ -311,6 +312,10 @@ bool ReadSample(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
 }
 
 } // namespace
+
+// Save states: KPAD's per-channel filters and button-repeat timers.
+void KPAD_HLE_SaveState(SaveState::Writer& out) { out.Pod(g_channels); }
+void KPAD_HLE_LoadState(SaveState::Reader& in) { in.Pod(g_channels); }
 
 // KPADRead: fills KPADStatus[0] for `chan` from the Bluetooth remote, returns the entry count.
 extern "C" int32_t KPAD__Read_HLE(uint32_t chan, uint32_t statusPtr, uint32_t count)

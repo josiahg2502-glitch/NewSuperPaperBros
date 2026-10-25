@@ -18,7 +18,9 @@ public sealed record TranslatedBuildShardOptions(
     int BaseShardCount = 72,
     int ModShardCount = 48,
     int RegistrationShardCount = 16,
-    RuntimeNativeIndex? NativeIndex = null);
+    RuntimeNativeIndex? NativeIndex = null,
+    // Save states: functions emitted resumable at their call sites (ResumableFunctionRewriter).
+    IReadOnlySet<uint>? ResumableFunctions = null);
 
 /// <summary>
 /// Per-shard compile-cost spread for one partition. Frozen membership does not
@@ -220,12 +222,12 @@ public static partial class TranslatedBuildShardEmitter
         var baseCommonShards = WriteFunctionShards(
             outputRoot, "base_common", portableCommonBase, options.BaseShardCount, baseTraits,
             "profile-neutral shared base", weightedSequential: true,
-            frozenBoundaries: baseCommonBoundaries?.Table);
+            frozenBoundaries: baseCommonBoundaries?.Table, resumable: options.ResumableFunctions);
         shards.AddRange(baseCommonShards);
         shards.AddRange(WriteFunctionShards(
             outputRoot, "base_portable_sensitive", portableSensitiveBase,
             Math.Min(24, Math.Max(1, portableSensitiveBase.Length)), baseTraits,
-            "base profile", weightedSequential: false));
+            "base profile", weightedSequential: false, resumable: options.ResumableFunctions));
         shards.AddRange(WriteFunctionShards(
             outputRoot, "retro_portable_sensitive", portableSensitiveBase,
             Math.Min(24, Math.Max(1, portableSensitiveBase.Length)), rrTraits,
@@ -588,7 +590,8 @@ public static partial class TranslatedBuildShardEmitter
         IReadOnlyDictionary<uint, Trait> traits,
         string traitsLabel,
         bool weightedSequential,
-        ShardBoundaryTable? frozenBoundaries = null)
+        ShardBoundaryTable? frozenBoundaries = null,
+        IReadOnlySet<uint>? resumable = null)
     {
         if (functions.Count == 0) return Array.Empty<ShardInfo>();
         var shardCount = Math.Min(requestedShardCount, functions.Count);
@@ -641,6 +644,10 @@ public static partial class TranslatedBuildShardEmitter
                 var functionSource = function.SourceText ?? File.ReadAllText(function.SourcePath);
                 functionSource = RegistrationMarkerRegex().Replace(functionSource, string.Empty);
                 functionSource = LowerStableDirectCalls(functionSource, traits);
+                if (resumable?.Contains(function.Address) == true)
+                {
+                    functionSource = ResumableFunctionRewriter.Rewrite(functionSource, function.Address);
+                }
                 // Diagnostics only; the named file no longer exists on disk (sources live in the
                 // bundle), so only the bare file name is kept, not the emitting machine's path.
                 source.Append($"#line 1 \"{Escape(Path.GetFileName(function.SourcePath))}\"{Environment.NewLine}");

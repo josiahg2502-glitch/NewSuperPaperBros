@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 #include <stdexcept>
 #include <vector>
@@ -43,7 +44,12 @@ bool IsActive() { return g_active; }
 void Initialize(const std::vector<RegionRequest>& regions) {
     std::lock_guard lock(g_mutex);
     g_requiresCheckedAccess = static_cast<size_t>(getpagesize()) > kGuestPageSize;
-    if (g_active) { if (!Same(g_layout, regions)) throw std::runtime_error("flat guest layout cannot be remapped"); return; }
+    if (g_active) {
+        if (!Same(g_layout, regions)) throw std::runtime_error("flat guest layout cannot be remapped");
+        // Keep fixed aliases, but restore power-on RAM just like the other flat-memory backend.
+        for (const auto& mapping : g_mappings) std::memset(mapping.host, 0, mapping.size);
+        return;
+    }
     mach_vm_address_t address = kFixedFlatGuestBase;
     if (mach_vm_allocate(mach_task_self(), &address, kGuestSpaceSize, VM_FLAGS_FIXED) != KERN_SUCCESS || address != kFixedFlatGuestBase)
         throw std::runtime_error("unable to reserve fixed 4 GiB macOS guest address space");

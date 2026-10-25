@@ -131,6 +131,7 @@ trees themselves (fetched by `Launcher/Prepare-Dependencies.ps1`) so end-user bu
 | libusb (linked into SDL on Windows) | 1.0.30 | LGPL-2.1-or-later | <https://github.com/libusb/libusb> |
 | Abseil | LTS 20240722.0 | Apache-2.0 | <https://github.com/abseil/abseil-cpp> |
 | Dear ImGui | 1.91.9b-docking | MIT | <https://github.com/ocornut/imgui> |
+| Roboto Medium (glyphs pre-rendered into the Android core's Preparing screen) | as shipped with Dear ImGui | Apache-2.0 | <https://fonts.google.com/specimen/Roboto> |
 | {fmt} | 11.1.4 | MIT | <https://github.com/fmtlib/fmt> |
 | xxHash | 0.8.4 | BSD-2-Clause | <https://github.com/Cyan4973/xxHash> |
 | zlib | 1.3.2 | zlib | <https://github.com/madler/zlib> |

@@ -1130,3 +1130,10 @@ extern "C" void NAND_IOS_Ioctlv_Entry_HLE(CpuContext* ctx) {
         NAND_IOS_Ioctlv_HLE(fd, cmd, numIn, numOut, vectorPtr));
 }
 PPC_NATIVE_OVERRIDE_VOID(8029654C, NAND_IOS_Ioctlv_Entry_HLE, (CpuContext* ctx), (ctx));
+
+void NAND_HLE_ResetFrontendIos() {
+    std::lock_guard lock(g_shaMutex);
+    g_shaHandles.clear();
+    g_nextShaFd = 0x10001;
+    g_isfsInitialized = false;
+}

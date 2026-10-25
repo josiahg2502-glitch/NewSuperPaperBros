@@ -1,3 +1,5 @@
+#include "save_state.h"
+#include <optional>
 // OSMessageQueue HLE.
 
 #include <cstdint>
@@ -111,9 +113,20 @@ namespace {
 // or return 0 immediately if non-blocking. Only the predicate/action/offsets differ per caller.
 template <typename Ready, typename Apply>
 int32_t MsgQueueOp(CpuContext* cpu, const char* who, uint32_t queuePtr, bool block,
-                   Ready ready, Apply apply, uint32_t wakeOffset, uint32_t blockOffset)
+                   Ready ready, Apply apply, uint32_t wakeOffset, uint32_t blockOffset,
+                   const CpuContext* recordEntry = nullptr, uint32_t recordExtra = 0,
+                   const SaveState::YieldRecord* resumed = nullptr, bool resumedRunning = false)
 {
-    const int32_t irqState = OS__DisableInterrupts_801a65ac();
+    const int32_t irqState = resumed ? static_cast<int32_t>(resumed->extra[3]) : OS__DisableInterrupts_801a65ac();
+    // Save states: a recorded blocking op (OSReceiveMessage) continues after its sleep when restored.
+    std::optional<SaveState::YieldScope> yieldScope;
+    if (resumed) {
+        yieldScope.emplace(*resumed);
+        OS_HLE_SleepResume(cpu, resumedRunning, 0);  // the sleep ran with interrupts already off
+    } else if (recordEntry && block) {
+        yieldScope.emplace(SaveState::YieldKind::MessageQueue, *recordEntry,
+                           std::initializer_list<uint32_t>{queuePtr, recordExtra, recordEntry->gpr[5], static_cast<uint32_t>(irqState)});
+    }
 
     while (true) {
         try {
@@ -170,9 +183,12 @@ REGISTER_NATIVE_FUNCTION(0x8027283C, OS__SendMessage_HLE_801a735c);
 extern "C" int32_t OS__ReceiveMessage_HLE_801a7424(CpuContext* ctx)
 {
     CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
-    const uint32_t queuePtr = cpu->gpr[3];
-    const uint32_t outMsgPtr = cpu->gpr[4];
-    const uint32_t flags = cpu->gpr[5];
+    bool resumedRunning = false;
+    const SaveState::YieldRecord* resumed = SaveState::TakeYield(SaveState::YieldKind::MessageQueue, resumedRunning);
+    const CpuContext entry = resumed ? resumed->entry : *cpu;
+    const uint32_t queuePtr = resumed ? resumed->extra[0] : cpu->gpr[3];
+    const uint32_t outMsgPtr = resumed ? resumed->extra[1] : cpu->gpr[4];
+    const uint32_t flags = resumed ? resumed->extra[2] : cpu->gpr[5];
     const bool block = (flags & 1u) != 0;
 
     if (queuePtr == 0) {
@@ -191,7 +207,7 @@ extern "C" int32_t OS__ReceiveMessage_HLE_801a7424(CpuContext* ctx)
                 ::Memory::Write32(outMsgPtr, msg);
             }
         },
-        kMsgQueueSendOffset, kMsgQueueRecvOffset);
+        kMsgQueueSendOffset, kMsgQueueRecvOffset, &entry, outMsgPtr, resumed, resumedRunning);
 }
 REGISTER_NATIVE_FUNCTION(0x80272904, OS__ReceiveMessage_HLE_801a7424);
 

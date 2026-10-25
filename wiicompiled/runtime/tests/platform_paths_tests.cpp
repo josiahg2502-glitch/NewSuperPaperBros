@@ -26,5 +26,14 @@ int main() {
     }
 #endif
 
+    const auto executable = RuntimePlatform::ExecutableDirectory();
+    RuntimePlatform::SetFrontendDirectories("/frontend/saves", "/frontend/system");
+    if (RuntimePlatform::ApplicationDataDirectory("ignored") != "/frontend/saves" ||
+        RuntimePlatform::ExecutableDirectory() != std::filesystem::path("/frontend/system") ||
+        RuntimePlatform::LogDirectory("ignored") != "/frontend/saves/Logs") return 1;
+    RuntimePlatform::ClearFrontendDirectories();
+    if (RuntimePlatform::FrontendDataDirectory() ||
+        RuntimePlatform::ApplicationDataDirectory("WiiCompiledPlatformPathsTest") != userData ||
+        RuntimePlatform::ExecutableDirectory() != executable) return 1;
     return 0;
 }

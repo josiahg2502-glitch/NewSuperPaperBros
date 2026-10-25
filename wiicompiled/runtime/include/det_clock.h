@@ -26,6 +26,7 @@ extern bool g_enabled;
 inline bool Enabled() noexcept { return detail::g_enabled; }
 // Turns the mode on. Must happen before the guest starts.
 void Enable() noexcept;
+void Reset() noexcept;
 
 // Virtual time-base ticks since boot (60.75 MHz).
 uint64_t Now() noexcept;
@@ -38,6 +39,8 @@ void AdvanceTo(uint64_t ticks) noexcept;
 void PaceTo(uint64_t ticks);
 // Forgets the real-time anchor, so the next PaceTo starts a fresh one (after a long host wait).
 void ResetPacing() noexcept;
+// Save states: sets the timeline to a saved instant (forward or back) and drops the pacing anchor.
+void RestoreNow(uint64_t ticks) noexcept;
 
 // Now() as a steady_clock time point on the virtual timeline, for code that keeps its deadlines as
 // time points. Never mix these with real Clock::now() values.

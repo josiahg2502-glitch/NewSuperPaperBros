@@ -247,6 +247,10 @@ elseif (_aurora_dawn_provider STREQUAL "package")
       "The package must be a Dawn install tree built with DAWN_ENABLE_INSTALL=ON.")
   endif ()
 
+  if(ANDROID)
+    include("${CMAKE_CURRENT_LIST_DIR}/AuroraAndroidDawn.cmake")
+    aurora_rebind_android_dawn()
+  endif()
   _aurora_dawn_set_platform_backends()
 
   get_target_property(_dawn_pkg_type dawn::webgpu_dawn TYPE)

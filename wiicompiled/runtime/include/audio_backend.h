@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <SDL3/SDL_audio.h>
+#include "frontend/runtime_contract.h"
 
 class AudioBackend {
 public:
@@ -13,6 +14,7 @@ public:
 
     bool Init(uint32_t sampleRate, uint32_t channels);
     void Shutdown();
+    void SetFrontendSink(RuntimeFrontend::PcmSink sink, void* opaque);
 
     // Wii AI DMA frames are big-endian and ordered right, left. SDL expects
     // native-endian interleaved left, right samples.
@@ -36,6 +38,8 @@ private:
     void ApplyGainLocked();
 
     mutable std::mutex m_mutex;
+    RuntimeFrontend::PcmSink m_frontendSink = nullptr;
+    void* m_frontendOpaque = nullptr;
     SDL_AudioStream* m_stream = nullptr;
     SDL_AudioSpec m_spec{};
     uint32_t m_sampleRate = 0;

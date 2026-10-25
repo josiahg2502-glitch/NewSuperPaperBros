@@ -1,3 +1,4 @@
+#include "frontend/runtime_mode.h"
 #include <aurora/aurora.h>
 #include <aurora/imgui.h>
 #include <unordered_map>
@@ -2994,6 +2995,7 @@ void PatchBootStrings() {
 }
 
 void Draw() noexcept {
+    if (RuntimeFrontend::Active()) return;
     PatchBootStrings();
     // Wait for the frame worker's DONE phase: it has replayed the previous frame's ImGui draw lists
     // and started the next ImGui frame, so all overlay callers can now safely issue ImGui commands.

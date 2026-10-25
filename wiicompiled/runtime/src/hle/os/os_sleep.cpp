@@ -1,3 +1,4 @@
+#include "save_state.h"
 // OSSleepTicks / OSSleepThread parking plus the host-side sleep-timer table.
 
 #include <algorithm>
@@ -414,9 +415,30 @@ void ReportUnparkableSleep(uint32_t queuePtr, uint32_t thread)
 
 // OSSleepThread (0x801b5c90)
 // Puts the current thread to sleep on a specified wait queue.
+extern "C" void SelectThread_ResumeIdle(CpuContext* cpu, uint32_t runningContext);
+
+// Save states: the rest of a sleep for a restored thread. Its SelectThread had parked it (finish the
+// switch that brings it back) or, for the thread that was idling, continues the idle loop.
+void OS_HLE_SleepResume(CpuContext* cpu, bool running, int32_t irqState)
+{
+    const uint32_t thread = Fiber::GuestFiberManager::GetCurrentGuestThread();
+    if (running) {
+        SelectThread_ResumeIdle(cpu, thread);
+    } else {
+        Fiber::GuestFiberManager::CompleteSwitchIn(thread, cpu);
+    }
+    OS__RestoreInterrupts_801a65d4(irqState);
+}
+
 extern "C" void OSSleepThread_HLE_801aa9b8(CpuContext* ctx)
 {
     CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
+    bool resumedRunning = false;
+    if (const SaveState::YieldRecord* resumed = SaveState::TakeYield(SaveState::YieldKind::Sleep, resumedRunning)) {
+        SaveState::YieldScope scope(*resumed);
+        OS_HLE_SleepResume(cpu, resumedRunning, static_cast<int32_t>(resumed->extra[1]));
+        return;
+    }
     const uint32_t queuePtr = cpu->gpr[3];
     
     if (queuePtr == 0) {
@@ -424,7 +446,10 @@ extern "C" void OSSleepThread_HLE_801aa9b8(CpuContext* ctx)
         return;
     }
 
+    const CpuContext entry = *cpu;
     const int32_t irqState = OS__DisableInterrupts_801a65ac();
+    // A sleep the game calls directly (inside the HLE waits this is not the outermost wait).
+    SaveState::YieldScope yieldScope(SaveState::YieldKind::Sleep, entry, {queuePtr, static_cast<uint32_t>(irqState)});
     
     try {
         uint32_t currentThread = ::Memory::Read32(kOSRunningContextAddr);
@@ -512,3 +537,48 @@ extern "C" void OSSleepThread_HLE_801aa9b8(CpuContext* ctx)
     OS__RestoreInterrupts_801a65d4(irqState);
 }
 PPC_NATIVE_OVERRIDE_VOID(802757F4, OSSleepThread_HLE_801aa9b8, (CpuContext* ctx), (ctx));
+
+void OS_HLE_ResetFrontendSleep() {
+    std::lock_guard lock(OsHleInternal::gSleepTimerMutex);
+    OsHleInternal::gSleepTimers.clear();
+}
+
+// Save states: the host side of the OS HLE (sleep timers, parks, interrupt state); the rest is guest memory.
+void OS_HLE_SaveState(SaveState::Writer& out)
+{
+    using namespace OsHleInternal;
+    out.Pod(g_interrupts_enabled.load());
+    out.Pod(g_interrupt_mask.load());
+    {
+        std::lock_guard<std::mutex> lock(gSleepTimerMutex);
+        out.Pod(uint32_t(gSleepTimers.size()));
+        for (const auto& entry : gSleepTimers) {
+            out.Pod(entry.threadPtr);
+            out.Pod(int64_t(entry.deadline.time_since_epoch().count()));
+        }
+    }
+    std::lock_guard<std::mutex> lock(gOutstandingParkMutex);
+    std::vector<uint32_t> parks(gOutstandingParks.begin(), gOutstandingParks.end());
+    std::sort(parks.begin(), parks.end());
+    out.Pod(uint32_t(parks.size()));
+    for (const uint32_t thread : parks) out.Pod(thread);
+}
+
+void OS_HLE_LoadState(SaveState::Reader& in)
+{
+    using namespace OsHleInternal;
+    g_interrupts_enabled.store(in.Get<bool>());
+    g_interrupt_mask.store(in.Get<uint32_t>());
+    {
+        std::lock_guard<std::mutex> lock(gSleepTimerMutex);
+        gSleepTimers.clear();
+        for (uint32_t i = 0, n = in.Get<uint32_t>(); i < n && in.Ok(); ++i) {
+            const uint32_t thread = in.Get<uint32_t>();
+            const auto ticks = in.Get<int64_t>();
+            gSleepTimers.push_back({thread, std::chrono::steady_clock::time_point(std::chrono::steady_clock::duration(ticks))});
+        }
+    }
+    std::lock_guard<std::mutex> lock(gOutstandingParkMutex);
+    gOutstandingParks.clear();
+    for (uint32_t i = 0, n = in.Get<uint32_t>(); i < n && in.Ok(); ++i) gOutstandingParks.insert(in.Get<uint32_t>());
+}

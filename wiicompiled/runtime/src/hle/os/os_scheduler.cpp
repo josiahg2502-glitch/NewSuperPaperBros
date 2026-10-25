@@ -1,3 +1,4 @@
+#include "frontend/runtime_mode.h"
 // SelectThread scheduler, OSWakeupThread and the OSMutex primitives.
 
 #include <algorithm>
@@ -161,6 +162,8 @@ extern "C" void func_8026DE74(CpuContext* ctx);
 // Fibers instead of blocking InvokeIndirectJump.
 // ============================================================================
 
+static void SelectThreadSwitch(CpuContext* cpu, uint32_t runningContext, bool resumeInIdle);
+
 extern "C" void SelectThread_801a9c08(CpuContext* ctx)
 {
     CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
@@ -246,23 +249,41 @@ extern "C" void SelectThread_801a9c08(CpuContext* ctx)
         }
     }
 
+    SelectThreadSwitch(cpu, runningContext, false);
+}
+
+// Save states: a restored thread that was in the idle loop when the state was taken continues there.
+extern "C" void SelectThread_ResumeIdle(CpuContext* cpu, uint32_t runningContext)
+{
+    SelectThreadSwitch(cpu, runningContext, true);
+}
+
+// The second half of SelectThread: idle until a thread is runnable, then switch to it. A restored
+// state enters with `resumeInIdle`, at the idle loop's condition (where frontend frames suspend).
+static void SelectThreadSwitch(CpuContext* cpu, uint32_t runningContext, bool resumeInIdle)
+{
     // Check if there are any runnable threads
     uint32_t reschedPending = ::Memory::Read32(kSchedulerPendingFlagAddr);
-    if (reschedPending == 0) {
-        // No threads to run - enter idle loop
-        TryInvokeSwitchCallback(runningContext, 0, cpu);
-        ::Memory::Write32(kOSRunningContextAddr, 0);
-        
-        // Set current context to idle thread context
-        OS__SetCurrentContext_801a1e70(kIdleThreadContextAddr);
-        
+    if (resumeInIdle || reschedPending == 0) {
+        if (!resumeInIdle) {
+            // No threads to run - enter idle loop
+            TryInvokeSwitchCallback(runningContext, 0, cpu);
+            ::Memory::Write32(kOSRunningContextAddr, 0);
+
+            // Set current context to idle thread context
+            OS__SetCurrentContext_801a1e70(kIdleThreadContextAddr);
+        }
+
+        bool interruptsEnabled = resumeInIdle;
         while (true) {
             // Enable interrupts and idle until something becomes runnable.
-            OS__EnableInterrupts_801a65c0();
+            if (!interruptsEnabled) OS__EnableInterrupts_801a65c0();
+            interruptsEnabled = false;
 
             while (::Memory::Read32(kSchedulerPendingFlagAddr) == 0) {
                 if (DetClock::Enabled()) {
                     DeterministicIdleStep(cpu);
+                    RuntimeFrontend::SuspendIfRequested();  // a libretro frame ends at this loop's top
                     continue;
                 }
                 ProcessSleepTimers(cpu);
