@@ -344,6 +344,20 @@ sealed class MainForm : Form
         return scaled[(name, w, h, flip)] = b;
     }
 
+    // Where a sprite's drawn art starts and how wide it is, at a drawn width of `width`.
+    readonly Dictionary<string, RectangleF> visibleArt = new();
+    (int x, int w) Visible(string name, int width, bool flip = false)
+    {
+        if (!visibleArt.TryGetValue(name, out var f))
+        {
+            var img = sprites.TryGetValue(name, out var i) ? (Bitmap)i : null;
+            var b = img != null ? Opaque(img) : Rectangle.Empty;
+            f = visibleArt[name] = img != null ? new RectangleF((float)b.X / img.Width, 0, (float)b.Width / img.Width, 1) : new RectangleF(0, 0, 1, 1);
+        }
+        float x0 = flip ? 1 - f.X - f.Width : f.X;
+        return ((int)(x0 * width), (int)(f.Width * width));
+    }
+
     // How far into a click-triggered move (0..1), or -1 when none is playing.
     double Hop(string name, double seconds) => jumpAt.TryGetValue(name, out var at) && T - at < seconds ? (T - at) / seconds : -1;
 
@@ -351,7 +365,7 @@ sealed class MainForm : Form
     // Like Dusklight's launcher: the game's world fills the window and darkens toward the left, where the logo and a
     // column of big menu words sit; disc status in the bottom-left corner, version and Tippi's tip in the bottom-right.
     // The world here is Lineland as Super Paper Mario draws it: flat paper hills with ink outlines, blocky clouds, a row
-    // of ? blocks, Mario, Luigi and Merlon standing on the grass and Tippi looping around them.
+    // Merlon, Mario and Luigi standing on the grass and Tippi looping around them.
     static readonly Color Accent = ColorTranslator.FromHtml("#FEE685"), ReadyGreen = ColorTranslator.FromHtml("#D8F999"),
         ErrorPink = ColorTranslator.FromHtml("#FFC9C9"), Muted = ColorTranslator.FromHtml("#C9C3BE"), Night = ColorTranslator.FromHtml("#16122B");
     Bitmap? sceneSky, sceneLand;
@@ -390,23 +404,6 @@ sealed class MainForm : Form
             g.FillRectangle(new SolidBrush(ColorTranslator.FromHtml("#6FD36A")), grass);
             for (int x = 0; x < size.Width; x += S(24)) g.FillEllipse(new SolidBrush(ColorTranslator.FromHtml("#6FD36A")), x - S(4), ground - S(9), S(32), S(22));
             g.DrawLine(ink, 0, ground + S(22), size.Width, ground + S(22));
-            // A row of blocks floating over the right half: brick, ?, brick, ?.
-            int bs = S(54), bx = (int)(size.Width * 0.6), by = ground - S(250);
-            using var qFont = new Font("Segoe UI Black", 22f, FontStyle.Bold);
-            for (int i = 0; i < 4; i++)
-            {
-                var b = new Rectangle(bx + i * bs, by, bs, bs);
-                bool q = i % 2 == 1;
-                g.FillRectangle(new SolidBrush(ColorTranslator.FromHtml(q ? "#FFC83D" : "#D9793A")), b);
-                if (q) TextRenderer.DrawText(g, "?", qFont, b, ColorTranslator.FromHtml("#7A4A14"), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
-                else
-                    using (var mortar = new Pen(ColorTranslator.FromHtml("#8E4A1E"), S(2)))
-                    {
-                        g.DrawLine(mortar, b.X, b.Y + bs / 2, b.Right, b.Y + bs / 2);
-                        g.DrawLine(mortar, b.X + bs / 2, b.Y, b.X + bs / 2, b.Y + bs / 2);
-                    }
-                g.DrawRectangle(ink, b);
-            }
         }
     }
 
@@ -440,14 +437,19 @@ sealed class MainForm : Form
             double hop = Hop(name, 0.7);
             return (float)(Math.Abs(Math.Sin(t * 2.2 + phase)) * S(4) + (hop < 0 ? 0 : Math.Sin(hop * Math.PI) * S(40)));
         }
-        int h = S(150);
-        marioRect = new Rectangle((int)(size.Width * 0.66), ground - h + S(6) - (int)Lift("mario", 0), S(124), h);
-        luigiRect = new Rectangle((int)(size.Width * 0.82), ground - h + S(6) - (int)Lift("luigi", 1.3), S(118), h);
-        // Merlon floats a little behind them; a click makes him twirl (squeezed to a sliver and back, a paper turn).
-        int ms = S(170);
+        // Merlon, Mario and Luigi stand side by side with even gaps between their drawn art (the sprites carry different
+        // empty margins), centred in the clear right part of the scene.
+        int h = S(150), lh = S(172), ms = S(160), mw0 = S(124), lw = S(135), gap = S(40);  // Luigi is the taller brother
+        var (mx, mvw) = Visible("merlon", ms);
+        var (ox, ovw) = Visible("mario", mw0);
+        var (lx, lvw) = Visible("luigi", lw, flip: true);
+        int left = (int)(size.Width * 0.73) - (mvw + ovw + lvw + 2 * gap) / 2;
+        marioRect = new Rectangle(left + mvw + gap - ox, ground - h + S(6) - (int)Lift("mario", 0), mw0, h);
+        luigiRect = new Rectangle(left + mvw + gap + ovw + gap - lx, ground - lh + S(6) - (int)Lift("luigi", 1.3), lw, lh);
+        // Merlon floats a little; a click makes him twirl (squeezed to a sliver and back, a paper turn).
         double twirl = Hop("merlon", 0.9), turn = twirl < 0 ? 1 : Math.Cos(twirl * Math.PI * 2);
         int mw = Math.Max(1, (int)(ms * Math.Abs(turn)));
-        merlonRect = new Rectangle((int)(size.Width * 0.5), ground - ms - S(14) - (int)((Math.Sin(t * 1.6) + 1) * S(6)), ms, ms);
+        merlonRect = new Rectangle(left - mx, ground - ms - S(10) - (int)((Math.Sin(t * 1.6) + 1) * S(6)), ms, ms);
         g.DrawImage(Sprite("merlon", ms, ms, turn < 0), new Rectangle(merlonRect.X + (ms - mw) / 2, merlonRect.Y, mw, ms));
         g.DrawImage(Sprite("mario", marioRect.Width, marioRect.Height), marioRect.Location);
         g.DrawImage(Sprite("luigi", luigiRect.Width, luigiRect.Height, true), luigiRect.Location);
