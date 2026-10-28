@@ -102,21 +102,17 @@ sealed class MainForm : Form
         {
             if (openPage >= 0) return;
             hover = menuRects.FindIndex(r => r.Contains(e.Location));
-            view.Cursor = hover >= 0 || marioRect.Contains(e.Location) || luigiRect.Contains(e.Location) || merlonRect.Contains(e.Location) ||
-                          tippiRect.Contains(e.Location) || tipRect.Contains(e.Location) || discRect.Contains(e.Location) ? tippiHand : tippiCursor;
+            view.Cursor = hover >= 0 || tipRect.Contains(e.Location) || discRect.Contains(e.Location) ? tippiHand : tippiCursor;
         };
         view.MouseLeave += (_, _) => hover = -1;
-        // Click Mario or Luigi to make them hop, Merlon to make him twirl, Tippi (or her tip) for another tip.
+        // A click on Tippi's tip shows another one; on the disc status, opens Game.
         view.MouseClick += (_, e) =>
         {
             if (openPage >= 0 || e.Button != MouseButtons.Left) return;
             int i = menuRects.FindIndex(r => r.Contains(e.Location));
             if (i >= 0) menu[i].act();
             else if (discRect.Contains(e.Location)) OpenPage(0);
-            else if (marioRect.Contains(e.Location)) jumpAt["mario"] = T;
-            else if (luigiRect.Contains(e.Location)) jumpAt["luigi"] = T;
-            else if (merlonRect.Contains(e.Location)) jumpAt["merlon"] = T;
-            else if (tippiRect.Contains(e.Location) || tipRect.Contains(e.Location)) NextTip();
+            else if (tipRect.Contains(e.Location)) NextTip();
         };
         view.Resize += (_, _) => { LayoutPage(); if (openPage >= 0) FreezeScene(); };
         backButton = Btn("◀  Back", (_, _) => ClosePage(), Paper);
@@ -267,9 +263,7 @@ sealed class MainForm : Form
     readonly bool animate = SystemInformation.UIEffectsEnabled;
     readonly Stopwatch clock = Stopwatch.StartNew();
     double T => animate ? clock.Elapsed.TotalSeconds : 1.0;
-    readonly Dictionary<string, double> jumpAt = new();
     readonly Dictionary<(string, int, int, bool), Bitmap> scaled = new();
-    Rectangle marioRect, luigiRect, tippiRect, merlonRect;
 
     static int Lerp(int a, int b, float f) => (int)(a + (b - a) * f);
 
@@ -344,130 +338,62 @@ sealed class MainForm : Form
         return scaled[(name, w, h, flip)] = b;
     }
 
-    // Where a sprite's drawn art starts and how wide it is, at a drawn width of `width`.
-    readonly Dictionary<string, RectangleF> visibleArt = new();
-    (int x, int w) Visible(string name, int width, bool flip = false)
-    {
-        if (!visibleArt.TryGetValue(name, out var f))
-        {
-            var img = sprites.TryGetValue(name, out var i) ? (Bitmap)i : null;
-            var b = img != null ? Opaque(img) : Rectangle.Empty;
-            f = visibleArt[name] = img != null ? new RectangleF((float)b.X / img.Width, 0, (float)b.Width / img.Width, 1) : new RectangleF(0, 0, 1, 1);
-        }
-        float x0 = flip ? 1 - f.X - f.Width : f.X;
-        return ((int)(x0 * width), (int)(f.Width * width));
-    }
-
-    // How far into a click-triggered move (0..1), or -1 when none is playing.
-    double Hop(string name, double seconds) => jumpAt.TryGetValue(name, out var at) && T - at < seconds ? (T - at) / seconds : -1;
 
     // ----- The title screen -----
-    // Like Dusklight's launcher: the game's world fills the window and darkens toward the left, where the logo and a
-    // column of big menu words sit; disc status in the bottom-left corner, version and Tippi's tip in the bottom-right.
-    // The world here is Lineland as Super Paper Mario draws it: flat paper hills with ink outlines, blocky clouds, a row
-    // Merlon, Mario and Luigi standing on the grass and Tippi looping around them.
+    // Like Dusklight's launcher: a scene from the game fills the window (one of startup	itle-*.jpg, HUD-free 4K captures
+    // with the HD textures, picked at random each start) and darkens toward the left, where the logo and a column of
+    // big menu words sit; disc status in the bottom-left corner, version and Tippi's tip in the bottom-right.
     static readonly Color Accent = ColorTranslator.FromHtml("#FEE685"), ReadyGreen = ColorTranslator.FromHtml("#D8F999"),
         ErrorPink = ColorTranslator.FromHtml("#FFC9C9"), Muted = ColorTranslator.FromHtml("#C9C3BE"), Night = ColorTranslator.FromHtml("#16122B");
-    Bitmap? sceneSky, sceneLand;
     Bitmap? frozen;  // the dimmed scene behind an open page (child cards are transparent over BackgroundImage)
 
-    void BuildScene(Size size)
+    Image? titleArt;  // loaded in BuildScene the first time
+    Bitmap? sceneSky;
+
+    // One of the title scenes beside the game (engine\startup	itle-*.jpg), or none (a plain night sky is drawn).
+    Image? LoadTitleArt()
     {
-        sceneSky?.Dispose();
-        sceneLand?.Dispose();
-        var r = new Rectangle(Point.Empty, size);
-        sceneSky = new Bitmap(size.Width, size.Height);
-        using (var g = Graphics.FromImage(sceneSky))
-        using (var sky = new LinearGradientBrush(r, ColorTranslator.FromHtml("#62B8F2"), ColorTranslator.FromHtml("#D6F0FF"), LinearGradientMode.Vertical))
-            g.FillRectangle(sky, r);
-        sceneLand = new Bitmap(size.Width, size.Height);
-        using (var g = Graphics.FromImage(sceneLand))
-        {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            int ground = GroundY(size);
-            using var ink = new Pen(ColorTranslator.FromHtml("#1E2A1E"), S(4)) { LineJoin = LineJoin.Round };
-            // Two rows of paper hills, the far ones paler.
-            foreach (var (row, color, baseY) in new[] { (0, "#9BDB8A", ground - S(40)), (1, "#5CC85A", ground + S(10)) })
-                for (int i = -1; i < 7; i++)
-                {
-                    int rad = S(110 + 50 * ((i + row) % 3));
-                    var c = new Rectangle((int)(size.Width * (i + row * 0.5) / 5.0) - rad, baseY - rad + rad / 3, rad * 2, rad * 2);
-                    g.FillEllipse(new SolidBrush(ColorTranslator.FromHtml(color)), c);
-                    g.DrawEllipse(ink, c);
-                }
-            // The ground: a grass strip with a scalloped top over brown earth.
-            var earth = new Rectangle(0, ground, size.Width, size.Height - ground);
-            g.FillRectangle(new SolidBrush(ColorTranslator.FromHtml("#C98A4B")), earth);
-            using (var stripe = new Pen(ColorTranslator.FromHtml("#B0743A"), S(3)))
-                for (int x = -size.Height; x < size.Width; x += S(28)) g.DrawLine(stripe, x, size.Height, x + S(40), ground + S(24));
-            var grass = new Rectangle(0, ground, size.Width, S(22));
-            g.FillRectangle(new SolidBrush(ColorTranslator.FromHtml("#6FD36A")), grass);
-            for (int x = 0; x < size.Width; x += S(24)) g.FillEllipse(new SolidBrush(ColorTranslator.FromHtml("#6FD36A")), x - S(4), ground - S(9), S(32), S(22));
-            g.DrawLine(ink, 0, ground + S(22), size.Width, ground + S(22));
-        }
+        var files = Directory.Exists(Path.Combine(play, "startup")) ? Directory.GetFiles(Path.Combine(play, "startup"), "title-*.jpg") : Array.Empty<string>();
+        if (files.Length == 0) return null;
+        try { return Image.FromStream(new MemoryStream(File.ReadAllBytes(files[Random.Shared.Next(files.Length)]))); }
+        catch (Exception e) when (e is IOException or ArgumentException) { return null; }
     }
 
-    int GroundY(Size size) => size.Height - Math.Max(S(120), size.Height / 5);
+    // The scene scaled to cover the window and softened a little (drawn at a third of the size and scaled back up),
+    // so it stays a backdrop behind the menu, as in Dusklight.
+    void BuildScene(Size size)
+    {
+        titleArt ??= LoadTitleArt();
+        sceneSky?.Dispose();
+        sceneSky = new Bitmap(size.Width, size.Height);
+        using var g = Graphics.FromImage(sceneSky);
+        if (titleArt == null)
+        {
+            using var sky = new LinearGradientBrush(new Rectangle(Point.Empty, size), ColorTranslator.FromHtml("#2B2257"), Night, LinearGradientMode.Vertical);
+            g.FillRectangle(sky, 0, 0, size.Width, size.Height);
+            return;
+        }
+        float scale = Math.Max((float)size.Width / titleArt.Width, (float)size.Height / titleArt.Height);
+        int w = (int)(titleArt.Width * scale), h = (int)(titleArt.Height * scale);
+        var cover = new Rectangle((size.Width - w) / 2, (size.Height - h) / 2, w, h);
+        using var small = new Bitmap(Math.Max(1, size.Width / 3), Math.Max(1, size.Height / 3));
+        using (var gs = Graphics.FromImage(small))
+        {
+            gs.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            gs.DrawImage(titleArt, new Rectangle(cover.X / 3, cover.Y / 3, cover.Width / 3, cover.Height / 3));
+        }
+        g.InterpolationMode = InterpolationMode.HighQualityBilinear;
+        g.PixelOffsetMode = PixelOffsetMode.Half;
+        g.DrawImage(small, new Rectangle(Point.Empty, size));
+    }
 
-    // The animated world (sky, drifting clouds, land, characters), with no menu: also what stays behind an open page.
+    // The backdrop, fading in from black over the first second.
     void PaintWorld(Graphics g, Size size)
     {
         if (sceneSky == null || sceneSky.Size != size) BuildScene(size);
-        double t = T;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.InterpolationMode = InterpolationMode.Bilinear;
         g.DrawImageUnscaled(sceneSky!, 0, 0);
-        // Blocky paper clouds drift right and wrap around.
-        using (var cloud = new SolidBrush(Color.White))
-        using (var edge = new Pen(ColorTranslator.FromHtml("#9CC6E6"), S(3)))
-            for (int i = 0; i < 5; i++)
-            {
-                float span = size.Width + S(320);
-                float x = (float)((i * span / 5 + t * S(8 + 4 * i)) % span) - S(160);
-                float y = S(40 + (i % 3) * 70);
-                var parts = new[] { new RectangleF(x, y, S(120), S(40)), new RectangleF(x + S(30), y - S(26), S(66), S(30)) };
-                foreach (var p in parts) g.DrawRectangle(edge, p.X, p.Y, p.Width, p.Height);
-                foreach (var p in parts) g.FillRectangle(cloud, p);
-            }
-        g.DrawImageUnscaled(sceneLand!, 0, 0);
-
-        int ground = GroundY(size);
-        float Lift(string name, double phase)
-        {
-            double hop = Hop(name, 0.7);
-            return (float)(Math.Abs(Math.Sin(t * 2.2 + phase)) * S(4) + (hop < 0 ? 0 : Math.Sin(hop * Math.PI) * S(40)));
-        }
-        // Merlon, Mario and Luigi stand side by side with even gaps between their drawn art (the sprites carry different
-        // empty margins), centred in the clear right part of the scene.
-        int h = S(150), lh = S(172), ms = S(160), mw0 = S(124), lw = S(135), gap = S(40);  // Luigi is the taller brother
-        var (mx, mvw) = Visible("merlon", ms);
-        var (ox, ovw) = Visible("mario", mw0);
-        var (lx, lvw) = Visible("luigi", lw, flip: true);
-        int left = (int)(size.Width * 0.73) - (mvw + ovw + lvw + 2 * gap) / 2;
-        marioRect = new Rectangle(left + mvw + gap - ox, ground - h + S(6) - (int)Lift("mario", 0), mw0, h);
-        luigiRect = new Rectangle(left + mvw + gap + ovw + gap - lx, ground - lh + S(6) - (int)Lift("luigi", 1.3), lw, lh);
-        // Merlon floats a little; a click makes him twirl (squeezed to a sliver and back, a paper turn).
-        double twirl = Hop("merlon", 0.9), turn = twirl < 0 ? 1 : Math.Cos(twirl * Math.PI * 2);
-        int mw = Math.Max(1, (int)(ms * Math.Abs(turn)));
-        merlonRect = new Rectangle(left - mx, ground - ms - S(10) - (int)((Math.Sin(t * 1.6) + 1) * S(6)), ms, ms);
-        g.DrawImage(Sprite("merlon", ms, ms, turn < 0), new Rectangle(merlonRect.X + (ms - mw) / 2, merlonRect.Y, mw, ms));
-        g.DrawImage(Sprite("mario", marioRect.Width, marioRect.Height), marioRect.Location);
-        g.DrawImage(Sprite("luigi", luigiRect.Width, luigiRect.Height, true), luigiRect.Location);
-
-        // Tippi loops over the right half, trailing sparkles.
-        PointF At(double when) => new((float)(size.Width * 0.72 + Math.Sin(when * 0.5) * size.Width * 0.2), (float)(size.Height * 0.32 + Math.Sin(when * 1.3) * S(40)));
-        using (var fade = new System.Drawing.Imaging.ImageAttributes())
-            for (int k = 6; k >= 1; k--)
-            {
-                var p = At(t - k * 0.09);
-                int sz = S(30 - k * 2);
-                fade.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix { Matrix33 = 1f - k / 7f });
-                g.DrawImage(Sprite("sparkle", sz, sz), new Rectangle((int)p.X - sz / 2, (int)p.Y - sz / 2, sz, sz), 0, 0, sz, sz, GraphicsUnit.Pixel, fade);
-            }
-        var tp = At(t);
-        int flap = (int)(S(64) * (0.82 + 0.18 * Math.Abs(Math.Sin(t * 9))));
-        tippiRect = new Rectangle((int)tp.X - S(32), (int)tp.Y - flap / 2, S(64), flap);
-        g.DrawImage(Sprite("tippi", S(64), S(64), Math.Cos(t * 0.5) < 0), tippiRect);
+        float a = (float)Math.Clamp((T - introAt) / 1.0, 0, 1);
+        if (a < 1) using (var black = new SolidBrush(Color.FromArgb((int)(255 * (1 - a)), Color.Black))) g.FillRectangle(black, 0, 0, size.Width, size.Height);
     }
 
     // Text with Dusklight's soft dark glow behind it, so it reads over the scene.
@@ -710,8 +636,6 @@ sealed class MainForm : Form
         "Something look odd at 120 FPS? Turn frame interpolation off on the Display page.",
         "Open saves folder takes you straight to your saves. A backup now and then never hurts.",
         "When two mods change the same file, the one whose name comes later wins.",
-        "Click Mario or Luigi over there. Go on.",
-        "Merlon twirls if you click him. He loves that.",
         "Click me for another tip!",
     };
     int tipIndex;

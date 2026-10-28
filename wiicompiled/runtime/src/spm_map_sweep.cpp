@@ -486,6 +486,10 @@ struct Sweep {
                     const unsigned rel = frames - firstFrame;
                     g_spmSweepDump = (dumpMap && name == dumpMap && rel >= dumpAt && rel < dumpAt + 2) ? 1 : 0;
                 }
+                if (static const bool hideHud = std::getenv("SPM_HIDE_HUD") != nullptr; hideHud) {  // clean captures (launcher art)
+                    CpuContext hud = *cpu;
+                    InvokeIndirectCpu(0x80198CA0, &hud);  // hudHide()
+                }
                 {   // SPM_SWEEP_WPAD: wpadmgr state once a second (cursor flag, pointingPos[0], KPAD pos/dpd of the newest status)
                     static const bool wpadLog = std::getenv("SPM_SWEEP_WPAD") != nullptr;
                     uint32_t wp = 0;
