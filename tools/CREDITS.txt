@@ -25,6 +25,8 @@ Built-in extras
   by the mod's authors to the khinsider website.
 - HD textures (engine\UserData\texture_replacements\SPM_HD_4x_BC3): converted from the
   "SPM Textures v1.0" HD texture pack.
+- Launcher background (engine\startup	itle-wallpaper.jpg): "Super Paper Mario Wallpaper" by FawfulTheGreat64,
+  https://www.deviantart.com/fawfulthegreat64/art/Super-Paper-Mario-Wallpaper-891704524
 - Character artwork in engine\startup and the launcher/window icon (Tippi) are Nintendo's.
 - Controller button icons and controller pictures (engine\UserData\button_icons): from "Input Prompts"
   by Kenney (www.kenney.nl), CC0. Xbox, PlayStation and Nintendo Switch are trademarks of their owners.

@@ -108,6 +108,7 @@ for regression checks.
 - **Higher-quality music:** the "SPM High Definition Audio" mod by Toadette Hack Fan and PaperToadette, with game
   patches by JohnP55
 - **HD textures:** converted from the "SPM Textures v1.0" HD texture pack
+- **Launcher background:** ["Super Paper Mario Wallpaper"](https://www.deviantart.com/fawfulthegreat64/art/Super-Paper-Mario-Wallpaper-891704524) by FawfulTheGreat64
 - **Controller button icons and pictures:** "Input Prompts" by [Kenney](https://kenney.nl), CC0
 - **Dolphin Emulator** data files (DSP coefficients, Wii system files), GPL-2.0-or-later
 - Symbol names from the Super Paper Mario decompilation community ([spm-decomp](https://github.com/SeekyCt/spm-decomp))

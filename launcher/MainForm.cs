@@ -86,8 +86,10 @@ sealed class MainForm : Form
         Cursor = tippiCursor;  // child controls without their own cursor inherit it
         Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!);  // Pixl, embedded from pixl.ico
         var area = Screen.PrimaryScreen?.WorkingArea.Size ?? new Size(S(1100), S(760));
-        ClientSize = new Size(Math.Min(S(1100), area.Width - 40), Math.Min(S(760), area.Height - 60));
-        MinimumSize = new Size(Math.Min(S(940), area.Width), Math.Min(S(640), area.Height));
+        // 16:9, the shape of the title artwork, so all of it shows.
+        int cw = Math.Min(S(1200), Math.Min(area.Width - 40, (area.Height - 60) * 16 / 9));
+        ClientSize = new Size(cw, cw * 9 / 16);
+        MinimumSize = new Size(Math.Min(S(960), area.Width), Math.Min(S(580), area.Height));
         BackColor = Cream;
         Font = new Font("Segoe UI", 10.5f);
         KeyPreview = true;
@@ -340,9 +342,10 @@ sealed class MainForm : Form
 
 
     // ----- The title screen -----
-    // Like Dusklight's launcher: a scene from the game fills the window (one of startup	itle-*.jpg, HUD-free 4K captures
-    // with the HD textures, picked at random each start) and darkens toward the left, where the logo and a column of
-    // big menu words sit; disc status in the bottom-left corner, version and Tippi's tip in the bottom-right.
+    // Like Dusklight's launcher: artwork fills the window (startup	itle-*.jpg: the Super Paper Mario wallpaper by
+    // FawfulTheGreat64, see CREDITS.txt) and darkens toward the left, where the logo and a column of big menu words
+    // sit; disc status in the bottom-left corner, version and Tippi's tip in the top-right (the art has its own logo
+    // bottom-right).
     static readonly Color Accent = ColorTranslator.FromHtml("#FEE685"), ReadyGreen = ColorTranslator.FromHtml("#D8F999"),
         ErrorPink = ColorTranslator.FromHtml("#FFC9C9"), Muted = ColorTranslator.FromHtml("#C9C3BE"), Night = ColorTranslator.FromHtml("#16122B");
     Bitmap? frozen;  // the dimmed scene behind an open page (child cards are transparent over BackgroundImage)
@@ -359,8 +362,7 @@ sealed class MainForm : Form
         catch (Exception e) when (e is IOException or ArgumentException) { return null; }
     }
 
-    // The scene scaled to cover the window and softened a little (drawn at a third of the size and scaled back up),
-    // so it stays a backdrop behind the menu, as in Dusklight.
+    // The artwork scaled to cover the window, centred.
     void BuildScene(Size size)
     {
         titleArt ??= LoadTitleArt();
@@ -376,15 +378,9 @@ sealed class MainForm : Form
         float scale = Math.Max((float)size.Width / titleArt.Width, (float)size.Height / titleArt.Height);
         int w = (int)(titleArt.Width * scale), h = (int)(titleArt.Height * scale);
         var cover = new Rectangle((size.Width - w) / 2, (size.Height - h) / 2, w, h);
-        using var small = new Bitmap(Math.Max(1, size.Width / 3), Math.Max(1, size.Height / 3));
-        using (var gs = Graphics.FromImage(small))
-        {
-            gs.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            gs.DrawImage(titleArt, new Rectangle(cover.X / 3, cover.Y / 3, cover.Width / 3, cover.Height / 3));
-        }
-        g.InterpolationMode = InterpolationMode.HighQualityBilinear;
-        g.PixelOffsetMode = PixelOffsetMode.Half;
-        g.DrawImage(small, new Rectangle(Point.Empty, size));
+        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        g.DrawImage(titleArt, cover);
     }
 
     // The backdrop, fading in from black over the first second.
@@ -418,15 +414,14 @@ sealed class MainForm : Form
         var size = view.ClientSize;
         if (size.Width <= 0 || size.Height <= 0 || openPage >= 0) return;
         PaintWorld(g, size);
-        // Dusklight's darkening: deep night from the left edge to clear by two thirds, plus a little along the bottom.
-        var r = new Rectangle(Point.Empty, size);
-        using (var left = new LinearGradientBrush(new Rectangle(0, 0, (int)(size.Width * 0.68) + 1, size.Height), Color.FromArgb(235, Night), Color.FromArgb(0, Night), LinearGradientMode.Horizontal))
-            g.FillRectangle(left, 0, 0, (int)(size.Width * 0.68), size.Height);
-        using (var bottom = new LinearGradientBrush(new Rectangle(0, size.Height - S(150), size.Width, S(151)), Color.FromArgb(0, Night), Color.FromArgb(170, Night), LinearGradientMode.Vertical))
+        // Dusklight's darkening: deep night from the left edge to clear past the middle, plus a little along the bottom.
+        using (var left = new LinearGradientBrush(new Rectangle(0, 0, (int)(size.Width * 0.55) + 1, size.Height), Color.FromArgb(215, Night), Color.FromArgb(0, Night), LinearGradientMode.Horizontal))
+            g.FillRectangle(left, 0, 0, (int)(size.Width * 0.55), size.Height);
+        using (var bottom = new LinearGradientBrush(new Rectangle(0, size.Height - S(150) - 2, size.Width, S(150) + 4), Color.FromArgb(0, Night), Color.FromArgb(170, Night), LinearGradientMode.Vertical))
             g.FillRectangle(bottom, 0, size.Height - S(150), size.Width, S(150));
         g.SmoothingMode = SmoothingMode.AntiAlias;
 
-        int x = S(64), y = Math.Max(S(40), size.Height / 2 - S(300));
+        int x = S(64), y = Math.Max(S(28), size.Height / 2 - S(300));
         // The eyebrow and the logo.
         float a0 = Intro(0);
         int rise = (int)(S(10) * (1 - a0));
@@ -446,12 +441,12 @@ sealed class MainForm : Form
             using (var fill = new LinearGradientBrush(new RectangleF(b.X, b.Y - 1, b.Width, b.Height / 2 + 2), Color.FromArgb(alpha, Red), Color.FromArgb(alpha, Yellow), LinearGradientMode.Vertical)
                    { WrapMode = WrapMode.TileFlipY })
                 g.FillPath(fill, path);
-            y = (int)b.Bottom + S(40);
+            y = (int)b.Bottom + S(28);
         }
 
         // The menu: big words that light up with a yellow fade on hover, like Dusklight's.
         menuRects.Clear();
-        int rowH = S(52), rowW = S(380);
+        int rowH = S(46), rowW = S(380);
         for (int i = 0; i < menu.Length; i++)
         {
             float a = Intro(i + 1);
@@ -466,7 +461,7 @@ sealed class MainForm : Form
             var at = new Point(row.X + S(16), row.Y + (rowH - TextRenderer.MeasureText(label, menuFont).Height) / 2);
             if (on) TextRenderer.DrawText(g, label, menuFont, at, Night, TextFormatFlags.NoPadding);
             else GlowText(g, label, menuFont, at, Color.White, (int)(255 * a));
-            y += rowH + S(8);
+            y += rowH + S(4);
         }
 
         // Bottom-left: is a disc set up (click it to open Game).
@@ -480,15 +475,17 @@ sealed class MainForm : Form
         discRect = new Rectangle(x, cy, statusSize.Width, statusSize.Height);
         GlowText(g, "Mods: " + ModNames(), smallFont, new Point(x, cy + S(30)), Muted, (int)(255 * ac));
 
-        // Bottom-right: Tippi's tip (click for another) and the version.
-        int right = size.Width - S(48);
-        string tip = "Tippi: " + Tips[Math.Max(0, tipIndex)];
-        var tipSize = TextRenderer.MeasureText(tip, smallFont);
-        tipRect = new Rectangle(right - tipSize.Width, cy, tipSize.Width, tipSize.Height);
-        GlowText(g, tip, smallFont, tipRect.Location, Color.White, (int)(230 * ac));
+        // Top-right: the version and Tippi's tip (click for another), over a soft dark band so they read on the art.
+        int right = size.Width - S(28), ty = S(16);
+        using (var band = new LinearGradientBrush(new Rectangle(0, -2, size.Width, S(70) + 4), Color.FromArgb((int)(150 * ac), Night), Color.FromArgb(0, Night), LinearGradientMode.Vertical))
+            g.FillRectangle(band, 0, 0, size.Width, S(70));
         string ver = "v" + AppVersion + "   made by JosiahG";
         var verSize = TextRenderer.MeasureText(ver, smallFont);
-        GlowText(g, ver, smallFont, new Point(right - verSize.Width, cy + S(30)), Muted, (int)(255 * ac));
+        GlowText(g, ver, smallFont, new Point(right - verSize.Width, ty), Muted, (int)(255 * ac));
+        string tip = "Tippi: " + Tips[Math.Max(0, tipIndex)];
+        var tipSize = TextRenderer.MeasureText(tip, smallFont);
+        tipRect = new Rectangle(right - tipSize.Width, ty + S(22), tipSize.Width, tipSize.Height);
+        GlowText(g, tip, smallFont, tipRect.Location, Color.White, (int)(230 * ac));
     }
 
     // The scene behind an open page: frozen and dimmed (the cards over it are transparent at their corners).
