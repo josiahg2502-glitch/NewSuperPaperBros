@@ -230,8 +230,13 @@ wgpu::PresentMode best_present_mode() {
     }
     return false;
   };
-  if (g_vsyncEnabled.load(std::memory_order_acquire) && supports(wgpu::PresentMode::Fifo)) {
-    return wgpu::PresentMode::Fifo;
+  if (g_vsyncEnabled.load(std::memory_order_acquire)) {
+    // A frame that misses its refresh must not wait a whole extra one: plain Fifo held heavy scenes at exactly
+    // 30 FPS (issues #45, #60, #61). Adaptive V-Sync shows it at once (Vulkan); Mailbox shows it at the next
+    // refresh without tearing or blocking (D3D12), the runtime's V-Sync lock pacing the game to the display.
+    if (supports(wgpu::PresentMode::FifoRelaxed)) return wgpu::PresentMode::FifoRelaxed;
+    if (supports(wgpu::PresentMode::Mailbox)) return wgpu::PresentMode::Mailbox;
+    if (supports(wgpu::PresentMode::Fifo)) return wgpu::PresentMode::Fifo;
   }
   // Vulkan prefers Mailbox, every other backend Immediate. Under window capture the Vulkan driver
   // cannot flip and Immediate leaks about a megabyte per present until the device is lost.
