@@ -341,9 +341,15 @@ void SleepPreciselyUntil(Clock::time_point deadline, bool finishWithSpin = false
     // This runs only for the final fraction of a VI interval. Do not yield the
     // host thread here: a scheduler quantum is larger than the remaining
     // budget and would recreate the 17-18 ms sawtooth this path removes.
+    // The pause hint keeps a spin on one SMT thread from starving its sibling core thread (a Steam Deck held the
+    // game at 30 FPS until a CPU thread was toggled, issue #43); Linux had a bare spin.
     while (Clock::now() < deadline) {
 #if defined(_WIN32)
         YieldProcessor();
+#elif defined(__x86_64__) || defined(__i386__)
+        __builtin_ia32_pause();
+#elif defined(__aarch64__)
+        asm volatile("yield");
 #endif
     }
 }
