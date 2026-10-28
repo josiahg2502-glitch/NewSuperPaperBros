@@ -104,17 +104,16 @@ sealed class MainForm : Form
         {
             if (openPage >= 0) return;
             hover = menuRects.FindIndex(r => r.Contains(e.Location));
-            view.Cursor = hover >= 0 || tipRect.Contains(e.Location) || discRect.Contains(e.Location) ? tippiHand : tippiCursor;
+            view.Cursor = hover >= 0 || discRect.Contains(e.Location) ? tippiHand : tippiCursor;
         };
         view.MouseLeave += (_, _) => hover = -1;
-        // A click on Tippi's tip shows another one; on the disc status, opens Game.
+        // A click on the disc status opens Game.
         view.MouseClick += (_, e) =>
         {
             if (openPage >= 0 || e.Button != MouseButtons.Left) return;
             int i = menuRects.FindIndex(r => r.Contains(e.Location));
             if (i >= 0) menu[i].act();
             else if (discRect.Contains(e.Location)) OpenPage(0);
-            else if (tipRect.Contains(e.Location)) NextTip();
         };
         view.Resize += (_, _) => { LayoutPage(); if (openPage >= 0) FreezeScene(); };
         backButton = Btn("◀  Back", (_, _) => ClosePage(), Paper);
@@ -344,8 +343,7 @@ sealed class MainForm : Form
     // ----- The title screen -----
     // Like Dusklight's launcher: artwork fills the window (startup	itle-*.jpg: the Super Paper Mario wallpaper by
     // FawfulTheGreat64, see CREDITS.txt) and darkens toward the left, where the logo and a column of big menu words
-    // sit; disc status in the bottom-left corner, version and Tippi's tip in the top-right (the art has its own logo
-    // bottom-right).
+    // sit; disc status in the bottom-left corner, version in the top-right (the art has its own logo bottom-right).
     static readonly Color Accent = ColorTranslator.FromHtml("#FEE685"), ReadyGreen = ColorTranslator.FromHtml("#D8F999"),
         ErrorPink = ColorTranslator.FromHtml("#FFC9C9"), Muted = ColorTranslator.FromHtml("#C9C3BE"), Night = ColorTranslator.FromHtml("#16122B");
     Bitmap? frozen;  // the dimmed scene behind an open page (child cards are transparent over BackgroundImage)
@@ -402,7 +400,7 @@ sealed class MainForm : Form
     readonly Font menuFont = new("Segoe UI", 22f, FontStyle.Bold), cornerFont = new("Segoe UI", 12f, FontStyle.Bold),
         smallFont = new("Segoe UI", 10.5f), eyebrowFont = new("Segoe UI", 14f);
     readonly List<Rectangle> menuRects = new();
-    Rectangle tipRect, discRect;
+    Rectangle discRect;
     int hover = -1;          // the menu item under the mouse or chosen with the arrow keys
     double introAt = 1e9;    // when the window first showed: items fade and rise in one after another
 
@@ -475,17 +473,13 @@ sealed class MainForm : Form
         discRect = new Rectangle(x, cy, statusSize.Width, statusSize.Height);
         GlowText(g, "Mods: " + ModNames(), smallFont, new Point(x, cy + S(30)), Muted, (int)(255 * ac));
 
-        // Top-right: the version and Tippi's tip (click for another), over a soft dark band so they read on the art.
+        // Top-right: the version, over a soft dark band so it reads on the art.
         int right = size.Width - S(28), ty = S(16);
         using (var band = new LinearGradientBrush(new Rectangle(0, -2, size.Width, S(70) + 4), Color.FromArgb((int)(150 * ac), Night), Color.FromArgb(0, Night), LinearGradientMode.Vertical))
             g.FillRectangle(band, 0, 0, size.Width, S(70));
         string ver = "v" + AppVersion + "   made by JosiahG";
         var verSize = TextRenderer.MeasureText(ver, smallFont);
         GlowText(g, ver, smallFont, new Point(right - verSize.Width, ty), Muted, (int)(255 * ac));
-        string tip = "Tippi: " + Tips[Math.Max(0, tipIndex)];
-        var tipSize = TextRenderer.MeasureText(tip, smallFont);
-        tipRect = new Rectangle(right - tipSize.Width, ty + S(22), tipSize.Width, tipSize.Height);
-        GlowText(g, tip, smallFont, tipRect.Location, Color.White, (int)(230 * ac));
     }
 
     // The scene behind an open page: frozen and dimmed (the cards over it are transparent at their corners).
@@ -586,7 +580,6 @@ sealed class MainForm : Form
         body.Controls.Add(Choice("Language (European disc)", "language", new[] { ("English", "\"en\""), ("Français", "\"fr\""), ("Deutsch", "\"de\""), ("Español", "\"es\""), ("Italiano", "\"it\"") }, "game"));
         body.Controls.Add(gameNote = Note("The game starts borderless at 1080p. " +
                                "In the game, F10 opens the settings menu (resolution, aspect, controllers, audio) and F11 switches between fullscreen and a window."));
-        tipIndex = Random.Shared.Next(Tips.Length);  // Tippi's tip in the title screen's corner
         var row = new FlowLayoutPanel { AutoSize = true, Margin = Padding.Empty };
         row.Controls.Add(Btn("Open game folder", (_, _) => Process.Start("explorer.exe", play), Paper));
         row.Controls.Add(Btn("Open saves folder", (_, _) => Process.Start("explorer.exe", Directory.CreateDirectory(SaveDataDir()).FullName), Paper));
@@ -622,22 +615,6 @@ sealed class MainForm : Form
             MessageBox.Show(this, "The save could not be imported:\n" + e.Message, "Import save", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
-
-    static readonly string[] Tips =
-    {
-        "Press F10 during the game to change the resolution, aspect ratio or controls without quitting.",
-        "F11 flips the game between fullscreen and a window.",
-        "Shake right after a jump to pull off a stylish move for extra points.",
-        "Plug in any controller and it works right away. Remap it on the Controls page.",
-        "Cinematic 2.39:1 shows more of every level than the Wii ever could.",
-        "Something look odd at 120 FPS? Turn frame interpolation off on the Display page.",
-        "Open saves folder takes you straight to your saves. A backup now and then never hurts.",
-        "When two mods change the same file, the one whose name comes later wins.",
-        "Click me for another tip!",
-    };
-    int tipIndex;
-
-    void NextTip() => tipIndex = (tipIndex + 1) % Tips.Length;
 
     void Launch()
     {
