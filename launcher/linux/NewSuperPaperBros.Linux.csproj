@@ -27,7 +27,7 @@
     <PackageReference Include="Avalonia.Fonts.Inter" Version="11.2.3" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="../GameConfig.cs;../WiiDisc.cs;../WiiSave.cs;../Gamepads.cs" />
+    <Compile Include="../GameConfig.cs;../WiiDisc.cs;../WiiSave.cs;../Gamepads.cs;../ModInstall.cs" />
     <EmbeddedResource Include="../pixl.ico" LogicalName="pixl.ico" />
   </ItemGroup>
 </Project>

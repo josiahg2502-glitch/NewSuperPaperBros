@@ -13,14 +13,19 @@ using Avalonia.Threading;
 
 namespace NewSuperPaperBros;
 
-// The Linux launcher window: the Windows launcher (launcher\MainForm.cs) page for page - a paper-craft header, a nav
-// column (Play, Display, Controls, Mods) and one card per page. Everything it changes goes to engine/UserData/Config.toml,
+// The Linux launcher window: the Windows launcher (launcher\MainForm.cs) page for page, styled after Smash 4's menus
+// (coloured tiles, drifting stripes) and Tomodachi Life (pastel polka dots, bubbly shapes): a header, a column of page
+// tiles (Play, Display, Controls, Mods) and one card per page. Everything it changes goes to engine/UserData/Config.toml,
 // read by the game at start. Keep the two in step when either changes.
 sealed class MainWindow : Window
 {
-    public static readonly Color Cream = Color.Parse("#FFF6DC"), Paper = Color.Parse("#FFFCF2"), Ink = Color.Parse("#3A2A18"),
-        Yellow = Color.Parse("#FFD83A"), Red = Color.Parse("#E04040"), Sky = Color.Parse("#7EC8F5"), Green = Color.Parse("#56B24A"),
-        Hover = Color.Parse("#FFEFA8");
+    public static readonly Color Cream = Color.Parse("#EEF0F6"), Paper = Colors.White, Ink = Color.Parse("#3B3B52"),
+        Yellow = Color.Parse("#FFC83D"), Red = Color.Parse("#EC3A55"), Sky = Color.Parse("#6FC3FF"), Green = Color.Parse("#6FD36A"),
+        Pink = Color.Parse("#FFD6EA"), Mint = Color.Parse("#D3F5EA");
+    // Each page's tile colour, like Smash 4's main menu; its card wears a softer border of the same colour.
+    static readonly Color[] TileColors = { Color.Parse("#EC3A55"), Color.Parse("#3B8CFF"), Color.Parse("#2EC27E"), Color.Parse("#FF9A1F") };
+    public static Color Mix(Color a, Color b, double f) =>
+        Color.FromRgb((byte)(a.R + (b.R - a.R) * f), (byte)(a.G + (b.G - a.G) * f), (byte)(a.B + (b.B - a.B) * f));
     public static readonly IBrush InkBrush = new SolidColorBrush(Ink);
     static readonly FontFamily Font = new("fonts:Inter#Inter");
     // WinForms sizes are in points; these are the same sizes in pixels (10.5pt, 13pt, 18pt, 24pt).
@@ -93,14 +98,18 @@ sealed class MainWindow : Window
 
         var header = new HeaderView(this) { Height = 150 };
         var nav = new NavView(this) { Width = 220 };
+        var stripes = new StripesView(this);
         var grid = new Grid { RowDefinitions = new RowDefinitions("150,*"), ColumnDefinitions = new ColumnDefinitions("220,*") };
         Grid.SetColumnSpan(header, 2);
         Grid.SetRow(nav, 1);
         Grid.SetRow(navButtons, 1);  // the page buttons sit on top of the nav column's drawing
+        Grid.SetRow(stripes, 1);
+        Grid.SetColumn(stripes, 1);
         Grid.SetRow(content, 1);
         Grid.SetColumn(content, 1);
         grid.Children.Add(header);
         grid.Children.Add(nav);
+        grid.Children.Add(stripes);
         grid.Children.Add(navButtons);
         grid.Children.Add(content);
         Content = grid;
@@ -111,6 +120,7 @@ sealed class MainWindow : Window
             if (WindowState == WindowState.Minimized) return;
             header.InvalidateVisual();
             nav.InvalidateVisual();
+            stripes.InvalidateVisual();
             float glow = (float)(Math.Sin(T * 3) + 1) / 2;  // PLAY breathes between two reds
             playButton.Back = Color.FromRgb((byte)Lerp(Red.R, 255, glow), (byte)Lerp(Red.G, 106, glow), (byte)Lerp(Red.B, 74, glow));
         };
@@ -151,7 +161,7 @@ sealed class MainWindow : Window
             else if (selfTest)
             {
                 foreach (var p in pages) ShowPage(p.button);
-                int code = !File.Exists(gameExe) ? 6 : !Gamepads.Ready ? 4 : Gamepads.Connected().All(p => Gamepads.Opens(p.id)) ? 0 : 5;
+                int code = !File.Exists(gameExe) ? 6 : !ModInstall.SelfCheck() ? 7 : !Gamepads.Ready ? 4 : Gamepads.Connected().All(p => Gamepads.Opens(p.id)) ? 0 : 5;
                 // posted: the lifetime cannot shut down while it is still starting
                 Dispatcher.UIThread.Post(() => (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Shutdown(code));
             }
@@ -200,11 +210,16 @@ sealed class MainWindow : Window
 
     void AddPage(string title, Control page)
     {
-        var button = new PaperButton(title, Paper, NavSize)
-        {
-            Width = 188, Height = 50, Padding = new Thickness(12, 0, 0, 0), Margin = new Thickness(0, 0, 0, 10), HoverColor = Hover,
-        };
+        var tile = TileColors[pages.Count % TileColors.Length];
+        var button = new PaperButton(title, tile, NavSize) { Width = 188, Height = 64, Padding = new Thickness(18, 0, 0, 0), Margin = new Thickness(0, 0, 0, 12) };
+        button.MakeTile();
         button.Click += () => ShowPage(button);
+        if (page is Border card)
+        {
+            card.BorderBrush = new SolidColorBrush(Mix(tile, Colors.White, 0.35));  // the card's border and heading take the tile's colour
+            if (card.Child is ScrollViewer { Content: StackPanel body } && body.Children.Count > 0 && body.Children[0] is TextBlock heading)
+                heading.Foreground = new SolidColorBrush(Mix(tile, Ink, 0.25));
+        }
         page.IsVisible = false;
         content.Children.Add(page);
         navButtons.Children.Add(button);
@@ -216,7 +231,7 @@ sealed class MainWindow : Window
         foreach (var (b, page) in pages)
         {
             bool on = b == button;
-            b.Back = on ? Yellow : Paper;
+            b.Selected = on;
             page.IsVisible = on;
         }
         RefreshStatus();
@@ -341,48 +356,44 @@ sealed class MainWindow : Window
             double t = w.T;
             g.FillRectangle(new LinearGradientBrush
             {
-                StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative), EndPoint = new RelativePoint(0, 1, RelativeUnit.Relative),
-                GradientStops = { new GradientStop(Sky, 0), new GradientStop(Color.Parse("#C8EAFF"), 1) },
+                StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative), EndPoint = new RelativePoint(1, 0, RelativeUnit.Relative),
+                GradientStops = { new GradientStop(Pink, 0), new GradientStop(Color.Parse("#D9EEFF"), 1) },
             }, r);
 
-            // Paper clouds drift right and wrap around.
-            var cloud = new SolidColorBrush(Color.FromArgb(240, 255, 255, 255));
-            for (int i = 0; i < 4; i++)
-            {
-                double span = r.Width + 240;
-                double x = (i * span / 4 + t * (10 + 5 * i)) % span - 120;
-                double y = 14 + (i % 2) * 30;
-                for (int j = 0; j < 3; j++) g.DrawEllipse(cloud, null, new Rect(x + j * 30, y - (j == 1 ? 12 : 0), 50, 34));
-            }
+            // Polka dots drift diagonally and wrap around (Tomodachi Life).
+            const double step = 46, dot = 16;
+            double shift = t * 12 % step;
+            var dots = new SolidColorBrush(Color.FromArgb(120, 255, 255, 255));
+            for (int row = -1; row * step < r.Height + step; row++)
+                for (int col = -1; col * step < r.Width + step; col++)
+                    g.DrawEllipse(dots, null, new Rect(col * step + (row % 2 == 0 ? 0 : step / 2) + shift, row * step + shift, dot, dot));
 
-            // Hills and title; Tippi flies in front of them.
-            var hill = new SolidColorBrush(Green);
-            var hillInk = new Pen(new SolidColorBrush(Color.Parse("#1E3C1E")), 4);
-            for (int i = 0; i < 9; i++)
-            {
-                double rad = 70 + 30 * (i % 3);
-                g.DrawEllipse(hill, hillInk, new Rect(r.Width * i / 8 - rad, r.Height - rad / 3 - 6, rad * 2, rad * 2));
-            }
-            g.DrawLine(new Pen(InkBrush, 4), new Point(0, r.Height - 2), new Point(r.Width, r.Height - 2));
+            // A scalloped edge along the bottom, like a Tomodachi Life window; the title and Tippi in front of it.
+            var edge = new SolidColorBrush(Cream);
+            g.FillRectangle(edge, new Rect(0, r.Height - 8, r.Width, 8));
+            for (double x = -11; x < r.Width + 22; x += 22) g.DrawEllipse(edge, null, new Rect(x, r.Height - 16, 22, 22));
             // Shrink the title if the window is narrow, so it never runs under the sprites.
             double em = Math.Min(46, (r.Width - 2 * 210) / 12.5);
             var title = new FormattedText("NEW SUPER PAPER BROS.", CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
-                new Typeface(Font, FontStyle.Normal, FontWeight.Bold), em, InkBrush);
-            var at = new Point(r.Width / 2 - title.Width / 2, 26);
-            // The ink outline: the title stamped around a 3.5 px circle, then the yellow-to-orange face on top.
+                new Typeface(Font, FontStyle.Italic, FontWeight.Black), em, new SolidColorBrush(Color.FromArgb(70, 90, 60, 120)));
+            var at = new Point(r.Width / 2 - title.Width / 2, 22);
+            // Bubble letters: a soft shadow, a thick white rim (the title stamped around a circle), then a red-to-yellow face.
             for (int a = 0; a < 16; a++)
-                g.DrawText(title, at + new Point(Math.Cos(a * Math.PI / 8) * 3.5, Math.Sin(a * Math.PI / 8) * 3.5));
+                g.DrawText(title, at + new Point(3 + Math.Cos(a * Math.PI / 8) * 7, 5 + Math.Sin(a * Math.PI / 8) * 7));
+            title.SetForegroundBrush(Brushes.White);
+            for (int a = 0; a < 16; a++)
+                g.DrawText(title, at + new Point(Math.Cos(a * Math.PI / 8) * 6, Math.Sin(a * Math.PI / 8) * 6));
             title.SetForegroundBrush(new LinearGradientBrush
             {
                 StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative), EndPoint = new RelativePoint(0, 1, RelativeUnit.Relative),
-                GradientStops = { new GradientStop(Yellow, 0), new GradientStop(Color.Parse("#FF9A1E"), 1) },
+                GradientStops = { new GradientStop(Red, 0), new GradientStop(Yellow, 1) },
             });
             g.DrawText(title, at);
             var sub = new FormattedText("Super Paper Mario (Wii) on PC  -  made by JosiahG  -  v" + AppVersion, CultureInfo.InvariantCulture,
                 FlowDirection.LeftToRight, new Typeface(Font, FontStyle.Normal, FontWeight.Bold), Body, InkBrush);
-            var tag = new Rect(r.Width / 2 - sub.Width / 2 - 10, 26 + em * 1.25, sub.Width + 20, sub.Height + 4);
-            g.DrawRectangle(new SolidColorBrush(Paper), new Pen(InkBrush, 2), tag, 8, 8);
-            g.DrawText(sub, new Point(r.Width / 2 - sub.Width / 2, tag.Y + 2));
+            var tag = new Rect(r.Width / 2 - sub.Width / 2 - 14, 26 + em * 1.3, sub.Width + 28, sub.Height + 8);
+            g.DrawRectangle(new SolidColorBrush(Paper), new Pen(new SolidColorBrush(Mix(Sky, Colors.White, 0.3)), 3), tag, tag.Height / 2, tag.Height / 2);
+            g.DrawText(sub, new Point(r.Width / 2 - sub.Width / 2, tag.Y + 4));
 
             // Tippi loops across the sky, trailing sparkles.
             double half = r.Width / 2.0 - 220;
@@ -447,15 +458,32 @@ sealed class MainWindow : Window
         }
     }
 
-    // A white paper card holding one page's controls, top to bottom; it scrolls when they are taller than the window.
+    // Smash 4's background: soft diagonal stripes sliding slowly behind the page.
+    sealed class StripesView : Control
+    {
+        readonly MainWindow w;
+        public StripesView(MainWindow window) { w = window; IsHitTestVisible = false; }
+        public override void Render(DrawingContext g)
+        {
+            var r = new Rect(Bounds.Size);
+            const double band = 36;
+            double slide = w.T * 8 % (band * 2);
+            var stripe = new SolidColorBrush(Color.FromArgb(70, 255, 255, 255));
+            for (double x = -r.Height - band * 2 + slide; x < r.Width; x += band * 2)
+                g.DrawGeometry(stripe, null, Polygon(new Point(x, r.Height), new Point(x + band, r.Height), new Point(x + band + r.Height, 0), new Point(x + r.Height, 0)));
+        }
+    }
+
+    // A white card holding one page's controls, top to bottom, rimmed in its tile's colour (set by AddPage); it
+    // scrolls when they are taller than the window.
     static (Control card, StackPanel body) NewCard(string heading)
     {
         var body = new StackPanel();
         body.Children.Add(new TextBlock { Text = heading, FontSize = Heading, FontWeight = FontWeight.Bold, Margin = new Thickness(0, 0, 0, 10) });
         var card = new Border
         {
-            Background = new SolidColorBrush(Paper), BorderBrush = InkBrush, BorderThickness = new Thickness(3), CornerRadius = new CornerRadius(14),
-            BoxShadow = BoxShadows.Parse("5 5 0 0 #32000000"), Margin = new Thickness(2, 2, 8, 8),
+            Background = new SolidColorBrush(Paper), BorderBrush = new SolidColorBrush(Sky), BorderThickness = new Thickness(5), CornerRadius = new CornerRadius(22),
+            BoxShadow = BoxShadows.Parse("4 6 0 0 #281E1E46"), Margin = new Thickness(2, 2, 8, 8),
             Child = new ScrollViewer { Content = body, Padding = new Thickness(22, 16, 22, 16) },
         };
         return (card, body);
@@ -501,8 +529,8 @@ sealed class MainWindow : Window
         tipLabel = new TextBlock { TextWrapping = TextWrapping.Wrap, MaxWidth = 600 };
         var bubble = new Border
         {
-            Child = tipLabel, Background = new SolidColorBrush(Color.Parse("#FFF3C4")), BorderBrush = InkBrush, BorderThickness = new Thickness(1),
-            Padding = new Thickness(10, 8, 10, 8), Cursor = TippiHand, Margin = new Thickness(0, 4, 0, 0), VerticalAlignment = VerticalAlignment.Top,
+            Child = tipLabel, Background = new SolidColorBrush(Mix(Pink, Colors.White, 0.35)), CornerRadius = new CornerRadius(14),
+            Padding = new Thickness(14, 10, 14, 10), Cursor = TippiHand, Margin = new Thickness(0, 4, 0, 0), VerticalAlignment = VerticalAlignment.Top,
         };
         bubble.PointerPressed += (_, _) => NextTip();
         tipIndex = Random.Shared.Next(Tips.Length) - 1;
@@ -1019,7 +1047,7 @@ sealed class MainWindow : Window
         playStatus.Text = ok ? "Disc: ready.  Mods: " + ModNames() : text;
         playStatus.Foreground = new SolidColorBrush(ok ? Ink : Red);
         chooseDisc.Text = ok ? "Change disc..." : "Choose disc image (.iso, .ciso, .wbfs)...";
-        chooseDisc.Back = ok ? Paper : Yellow;
+        chooseDisc.Back = ok ? Mint : Yellow;
         dumpHelp.IsVisible = !ok;
         gameNote.IsVisible = tipRow.IsVisible = ok;
     }
@@ -1034,11 +1062,12 @@ sealed class MainWindow : Window
     Control BuildModsPage()
     {
         var (card, body) = NewCard("Mods");
-        body.Children.Add(Note("How to install a mod:\n" +
-                               "1. Click Open mods folder.\n" +
-                               "2. Put the mod's folder in it (one folder per mod).\n" +
-                               "3. Click Refresh. Ticked mods load when the game starts; untick one to turn it off."));
-        body.Children.Add(Row(Btn("Open mods folder", () => Open(Directory.CreateDirectory(modsDir).FullName)), Btn("Refresh", LoadMods, Paper)));
+        body.Children.Add(Note("Install a mod from its .zip or its folder. Ticked mods load when the game starts; untick one to turn it off. " +
+                               "A mod holds a files folder (it replaces game files) and/or a textures folder."));
+        body.Children.Add(Row(
+            Btn("Install mod (.zip)...", async () => { if (await PickFile("Choose a mod (.zip)", "Mod archive (*.zip)", new[] { "*.zip" }, null) is { } zip) await InstallMod(zip); }),
+            Btn("Install mod folder...", async () => { if (await PickFolder("Choose the mod's folder (the one holding files or textures)") is { } dir) await InstallMod(dir); }, Paper),
+            Btn("Open mods folder", () => Open(Directory.CreateDirectory(modsDir).FullName), Paper)));
         modList = new StackPanel { Margin = new Thickness(8, 4, 8, 4) };
         var list = new StackPanel();
         list.Children.Add(new Border
@@ -1056,41 +1085,104 @@ sealed class MainWindow : Window
         return card;
     }
 
+    async Task<string?> PickFolder(string title)
+    {
+        try
+        {
+            if (StorageProvider.CanPickFolder)
+            {
+                var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = title, AllowMultiple = false });
+                return folders.Count > 0 ? folders[0].TryGetLocalPath() : null;
+            }
+        }
+        catch (Exception) { }  // no portal or GTK after all: ask for the path instead
+        var path = await AskPath(title);
+        return string.IsNullOrWhiteSpace(path) ? null : path.Trim().Trim('"', '\'');
+    }
+
+    // Installs a mod from a .zip or a folder into mods/<name> (ModInstall.cs, shared with the Windows launcher).
+    async Task InstallMod(string source)
+    {
+        string? temp = null;
+        try
+        {
+            string from = source;
+            if (File.Exists(source))
+            {
+                temp = Path.Combine(Path.GetTempPath(), "nspb-mod-" + Guid.NewGuid().ToString("N"));
+                ModInstall.ExtractZip(source, temp);
+                from = temp;
+            }
+            var modRoot = ModInstall.FindRoot(from);
+            if (modRoot == null) { await Message("Install mod", "This doesn't look like a New Super Paper Bros. mod: it has no files or textures folder."); return; }
+            string name = ModInstall.SafeName(modRoot == temp ? Path.GetFileNameWithoutExtension(source) : Path.GetFileName(modRoot.TrimEnd('/')));
+            var dest = Path.Combine(modsDir, name);
+            if (Directory.Exists(dest))
+            {
+                if (!await Message("Install mod", $"A mod called \"{name}\" is already installed. Replace it?", cancel: true)) return;
+                Directory.Delete(dest, true);
+            }
+            ModInstall.CopyDir(modRoot, dest);
+            LoadMods();
+            RefreshStatus();
+            await Message("Install mod", $"Installed \"{name}\". It loads the next time the game starts.");
+        }
+        catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException)
+        {
+            await Message("Install mod", "The mod could not be installed:\n" + e.Message);
+        }
+        finally
+        {
+            if (temp != null) try { Directory.Delete(temp, true); } catch (Exception) { }
+        }
+    }
+
     void LoadMods()
     {
         modList.Children.Clear();
         if (!Directory.Exists(modsDir)) return;
         foreach (var dir in Directory.GetDirectories(modsDir).OrderBy(d => d, StringComparer.Ordinal))
         {
-            var box = new CheckBox { Content = Path.GetFileName(dir), IsChecked = !File.Exists(Path.Combine(dir, "disabled")), Cursor = TippiHand };
+            var box = new CheckBox { Content = Path.GetFileName(dir), IsChecked = !File.Exists(Path.Combine(dir, "disabled")), Cursor = TippiHand, MinWidth = 480 };
             box.IsCheckedChanged += (_, _) =>
             {
                 var marker = Path.Combine(dir, "disabled");
                 if (box.IsChecked == true) File.Delete(marker); else File.WriteAllText(marker, "");
                 RefreshStatus();
             };
-            modList.Children.Add(box);
+            var remove = Btn("Remove", async () =>
+            {
+                if (!await Message("Remove mod", $"Remove \"{Path.GetFileName(dir)}\"? Its folder is deleted.", cancel: true)) return;
+                try { Directory.Delete(dir, true); }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException) { await Message("Remove mod", "The mod could not be removed:\n" + e.Message); }
+                LoadMods();
+                RefreshStatus();
+            }, Paper);
+            remove.Margin = new Thickness(0, 2, 0, 2);
+            modList.Children.Add(Row(box, remove));
         }
     }
 }
 
-// The launcher's flat paper button (the Windows launcher's FlatStyle buttons): ink border, bold label, own colour.
+// The launcher's buttons (the Windows launcher's PillButton and TileButton): a bubbly pill with a light top and a darker
+// lip underneath (Tomodachi Life), or, as a page tile, a coloured rounded block with white italic text (Smash 4).
 sealed class PaperButton : Border
 {
     readonly TextBlock label;
     Color back;
-    bool hover;
-    public Color? HoverColor;
+    bool hover, tile, selected;
+    IBrush? textBrush;
     public event Action? Click;
 
     public PaperButton(string text, Color back, double fontSize)
     {
-        label = new TextBlock { Text = text, FontWeight = FontWeight.Bold, FontSize = fontSize, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
+        label = new TextBlock { Text = text, FontWeight = FontWeight.Bold, FontSize = fontSize, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+                                HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center };
         Child = label;
-        BorderBrush = MainWindow.InkBrush;
         BorderThickness = new Thickness(2);
-        Padding = new Thickness(10, 4, 10, 4);
+        Padding = new Thickness(18, 6, 18, 6);
         Margin = new Thickness(0, 6, 10, 6);
+        CornerRadius = new CornerRadius(999);
         Cursor = MainWindow.TippiHand;
         HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Left;  // sized to the label, like the Windows AutoSize buttons
         Back = back;
@@ -1106,9 +1198,45 @@ sealed class PaperButton : Border
     }
 
     public string Text { get => label.Text ?? ""; set => label.Text = value; }
-    public Color Back { get => back; set { back = value; Paint(); } }
-    public IBrush? TextBrush { set => label.Foreground = value; }
+    // White would vanish on the white cards: those buttons are mint.
+    public Color Back { get => back; set { back = value == MainWindow.Paper ? MainWindow.Mint : value; Paint(); } }
+    public IBrush? TextBrush { set { textBrush = value; Paint(); } }
+    public bool Selected { set { selected = value; Paint(); } }
 
-    // The nav buttons light up under the pointer (only while not the selected page).
-    void Paint() => Background = new SolidColorBrush(hover && HoverColor is { } h && back == MainWindow.Paper ? h : back);
+    // A page tile in the nav column: bold italic white text on the left; the selected one sticks out with a white ring.
+    public void MakeTile()
+    {
+        tile = true;
+        label.FontStyle = FontStyle.Italic;
+        label.HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Left;
+        CornerRadius = new CornerRadius(14);
+        Paint();
+    }
+
+    void Paint()
+    {
+        Color face;
+        if (tile)
+        {
+            face = selected ? MainWindow.Mix(back, Colors.White, 0.12) : hover ? MainWindow.Mix(back, Colors.White, 0.25) : MainWindow.Mix(back, MainWindow.Cream, 0.35);
+            BorderBrush = selected ? Brushes.White : Brushes.Transparent;
+            BorderThickness = new Thickness(selected ? 4 : 0);
+            Margin = new Thickness(selected ? 0 : 10, 0, 0, 12);
+            BoxShadow = BoxShadows.Parse("3 5 0 0 #371E1E3C");
+            label.Foreground = Brushes.White;
+        }
+        else
+        {
+            face = hover ? MainWindow.Mix(back, Colors.White, 0.18) : back;
+            BorderBrush = new SolidColorBrush(MainWindow.Mix(back, MainWindow.Ink, 0.25));
+            BoxShadow = new BoxShadows(new BoxShadow { OffsetY = 4, Color = MainWindow.Mix(back, MainWindow.Ink, 0.35) });
+            bool light = back.R * 0.299 + back.G * 0.587 + back.B * 0.114 > 170;  // perceived brightness
+            label.Foreground = textBrush ?? (light ? MainWindow.InkBrush : Brushes.White);
+        }
+        Background = new LinearGradientBrush
+        {
+            StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative), EndPoint = new RelativePoint(0, 1, RelativeUnit.Relative),
+            GradientStops = { new GradientStop(MainWindow.Mix(face, Colors.White, tile ? 0.18 : 0.35), 0), new GradientStop(face, 1) },
+        };
+    }
 }

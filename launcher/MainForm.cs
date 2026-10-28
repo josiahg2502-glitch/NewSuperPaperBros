@@ -3,13 +3,21 @@ using System.Drawing.Drawing2D;
 
 namespace NewSuperPaperBros;
 
-// The launcher window: a paper-craft header, a nav column (Play, Display, Controls, Mods) and one
-// card per page. Everything it changes goes to <game folder>\UserData\Config.toml (engine\ in a release, Play\ in the dev tree), read by the game at start.
+// The launcher window, styled after Smash 4's menus (big coloured tiles, drifting stripes) and Tomodachi Life (pastel
+// polka dots, bubbly rounded shapes): a header, a column of page tiles (Play, Display, Controls, Mods) and one card per
+// page. Everything it changes goes to <game folder>\UserData\Config.toml (engine\ in a release, Play\ in the dev tree), read by the game at start.
 sealed class MainForm : Form
 {
-    static readonly Color Cream = ColorTranslator.FromHtml("#FFF6DC"), Paper = ColorTranslator.FromHtml("#FFFCF2"),
-        Ink = ColorTranslator.FromHtml("#3A2A18"), Yellow = ColorTranslator.FromHtml("#FFD83A"),
-        Red = ColorTranslator.FromHtml("#E04040"), Sky = ColorTranslator.FromHtml("#7EC8F5"), Green = ColorTranslator.FromHtml("#56B24A");
+    static readonly Color Cream = ColorTranslator.FromHtml("#EEF0F6"), Paper = Color.White,
+        Ink = ColorTranslator.FromHtml("#3B3B52"), Yellow = ColorTranslator.FromHtml("#FFC83D"),
+        Red = ColorTranslator.FromHtml("#EC3A55"), Sky = ColorTranslator.FromHtml("#6FC3FF"), Green = ColorTranslator.FromHtml("#6FD36A"),
+        Pink = ColorTranslator.FromHtml("#FFD6EA"), Mint = ColorTranslator.FromHtml("#D3F5EA");
+    // Each page's tile colour, like Smash 4's main menu; its card wears a softer border of the same colour.
+    static readonly Color[] TileColors =
+    {
+        ColorTranslator.FromHtml("#EC3A55"), ColorTranslator.FromHtml("#3B8CFF"), ColorTranslator.FromHtml("#2EC27E"), ColorTranslator.FromHtml("#FF9A1F"),
+    };
+    static Color Mix(Color a, Color b, float f) => Color.FromArgb(Lerp(a.R, b.R, f), Lerp(a.G, b.G, f), Lerp(a.B, b.B, f));
 
     readonly bool selfTest;
     readonly string? screenshotDir;
@@ -25,7 +33,7 @@ sealed class MainForm : Form
     static readonly string AppVersion = typeof(MainForm).Assembly.GetName().Version is { } v ? $"{v.Major}.{v.Minor}.{v.Build}" : "?";
     readonly GameConfig config;
     readonly Dictionary<string, Image> sprites = new();
-    readonly Panel content = new() { Dock = DockStyle.Fill };
+    readonly Panel content = new DoubleBufferedPanel { Dock = DockStyle.Fill };
     readonly List<(Button button, Control page)> pages = new();
     Label playStatus = null!, dumpHelp = null!, gameNote = null!;
     Control tipRow = null!;  // shown with gameNote once a disc is set up, so first-time setup stays short
@@ -82,10 +90,22 @@ sealed class MainForm : Form
         Font = new Font("Segoe UI", 10.5f);
         KeyPreview = true;
         StartPosition = FormStartPosition.CenterScreen;
+        if (screenshotDir != null) { StartPosition = FormStartPosition.Manual; Location = new Point(-6000, -6000); ShowInTaskbar = false; }  // off-screen
         DoubleBuffered = true;
 
         var header = new DoubleBufferedPanel { Dock = DockStyle.Top, Height = S(150) };
         header.Paint += PaintHeader;
+        // Smash 4's background: soft diagonal stripes sliding slowly behind the page.
+        content.Paint += (_, e) =>
+        {
+            var r = content.ClientRectangle;
+            int band = S(36);
+            float slide = (float)(T * S(8) % (band * 2));
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using var stripe = new SolidBrush(Color.FromArgb(70, 255, 255, 255));
+            for (float x = -r.Height - band * 2 + slide; x < r.Width; x += band * 2)
+                e.Graphics.FillPolygon(stripe, new[] { new PointF(x, r.Height), new PointF(x + band, r.Height), new PointF(x + band + r.Height, 0), new PointF(x + r.Height, 0) });
+        };
         var nav = new BufferedFlow { Dock = DockStyle.Left, Width = S(220), FlowDirection = FlowDirection.TopDown, Padding = S(16, 18, 0, 0), WrapContents = false };
         nav.Paint += PaintNav;
         // Click Mario or Luigi to make them hop, Tippi for another tip, Merlon to make him twirl.
@@ -103,6 +123,7 @@ sealed class MainForm : Form
         {
             if (!animate || WindowState == FormWindowState.Minimized) return;
             header.Invalidate();
+            content.Invalidate(false);  // the stripes around the card
             nav.Invalidate(new Rectangle(0, navSpriteTop, nav.Width, Math.Max(0, nav.Height - navSpriteTop)));
             float glow = (float)(Math.Sin(T * 3) + 1) / 2;  // PLAY breathes between two reds
             playButton.BackColor = Color.FromArgb(Lerp(Red.R, 255, glow), Lerp(Red.G, 106, glow), Lerp(Red.B, 74, glow));
@@ -135,7 +156,7 @@ sealed class MainForm : Form
                 using (var g = Graphics.FromImage(cur)) { g.Clear(Sky); for (int i = 0; i < cursorBitmaps.Count; i++) g.DrawImageUnscaled(cursorBitmaps[i], i * 64, 0); cur.Save(Path.Combine(screenshotDir, "cursor.png")); }
                 Close();
             }
-            else if (selfTest) { foreach (var p in pages) ShowPage(p.button); Environment.ExitCode = !File.Exists(gameExe) ? 6 : !Gamepads.Ready ? 4 : Gamepads.Connected().All(p => Gamepads.Opens(p.id)) ? 0 : 5; Close(); }
+            else if (selfTest) { foreach (var p in pages) ShowPage(p.button); Environment.ExitCode = !File.Exists(gameExe) ? 6 : !ModInstall.SelfCheck() ? 7 : !Gamepads.Ready ? 4 : Gamepads.Connected().All(p => Gamepads.Opens(p.id)) ? 0 : 5; Close(); }
         };
     }
 
@@ -185,17 +206,17 @@ sealed class MainForm : Form
 
     void AddPage(FlowLayoutPanel nav, string title, Control page)
     {
-        var button = new Button
+        var button = new TileButton(TileColors[pages.Count % TileColors.Length])
         {
-            Text = title, Size = S(188, 50), FlatStyle = FlatStyle.Flat, BackColor = Paper, ForeColor = Ink,
-            Font = new Font("Segoe UI", 13f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft, Padding = S(12, 0, 0, 0),
-            Margin = S(0, 0, 0, 10), Cursor = tippiHand, UseCompatibleTextRendering = false,
+            Text = title, Size = S(188, 64), Font = new Font("Segoe UI", 15f, FontStyle.Bold | FontStyle.Italic),
+            Margin = S(0, 0, 0, 12), Cursor = tippiHand,
         };
-        button.FlatAppearance.BorderColor = Ink;
-        button.FlatAppearance.BorderSize = S(2);
         button.Click += (_, _) => ShowPage(button);
-        button.MouseEnter += (_, _) => { if (button.BackColor == Paper) button.BackColor = Hover; };
-        button.MouseLeave += (_, _) => { if (button.BackColor == Hover) button.BackColor = Paper; };
+        if (page is Panel card)
+        {
+            card.Tag = button.Tile;  // the card's border and heading take the tile's colour
+            if (card.Controls.Count > 0 && card.Controls[0].Controls.Count > 0) card.Controls[0].Controls[0].ForeColor = Mix(button.Tile, Ink, 0.25f);
+        }
         page.Dock = DockStyle.Fill;
         page.Visible = false;
         content.Controls.Add(page);
@@ -208,7 +229,7 @@ sealed class MainForm : Form
         foreach (var (b, page) in pages)
         {
             bool on = b == button;
-            b.BackColor = on ? Yellow : Paper;
+            ((TileButton)b).Selected = on;
             page.Visible = on;
         }
         RefreshStatus();
@@ -225,7 +246,6 @@ sealed class MainForm : Form
     Rectangle marioRect, luigiRect, tippiRect, merlonRect;
     int navSpriteTop;
     Button playButton = null!;
-    static readonly Color Hover = ColorTranslator.FromHtml("#FFEFA8");
 
     static int Lerp(int a, int b, float f) => (int)(a + (b - a) * f);
 
@@ -312,35 +332,36 @@ sealed class MainForm : Form
         using (var g = Graphics.FromImage(headerBack))
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var sky = new LinearGradientBrush(r, Sky, ColorTranslator.FromHtml("#C8EAFF"), LinearGradientMode.Vertical)) g.FillRectangle(sky, r);
+            using (var sky = new LinearGradientBrush(r, Pink, ColorTranslator.FromHtml("#D9EEFF"), LinearGradientMode.Horizontal)) g.FillRectangle(sky, r);
         }
         headerTitle = new Bitmap(size.Width, size.Height);
         using (var g = Graphics.FromImage(headerTitle))
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var hill = new SolidBrush(Green))
-            using (var hillInk = new Pen(ColorTranslator.FromHtml("#1E3C1E"), S(4)))
-                for (int i = 0; i < 9; i++)
-                {
-                    int rad = S(70 + 30 * (i % 3));
-                    var c = new Rectangle(r.Width * i / 8 - rad, r.Height - rad / 3 - S(6), rad * 2, rad * 2);
-                    g.DrawEllipse(hillInk, c);
-                    g.FillEllipse(hill, c);
-                }
-            using (var pen = new Pen(Ink, S(4))) g.DrawLine(pen, 0, r.Height - S(2), r.Width, r.Height - S(2));
+            // A scalloped white edge along the bottom, like a Tomodachi Life window.
+            int bump = S(22);
+            using (var edge = new SolidBrush(Cream))
+            {
+                g.FillRectangle(edge, 0, r.Height - S(8), r.Width, S(8));
+                for (int x = -bump / 2; x < r.Width + bump; x += bump) g.FillEllipse(edge, x, r.Height - S(16), bump, bump);
+            }
             using var path = new GraphicsPath();
             var fmt = new StringFormat { Alignment = StringAlignment.Center };
             // Shrink the title if the window is narrow, so it never runs under the sprites.
             float em = Math.Min(S(46), (r.Width - S(2 * 210)) / 12.5f);
-            path.AddString("NEW SUPER PAPER BROS.", new FontFamily("Segoe UI"), (int)FontStyle.Bold, em, new Point(r.Width / 2, S(26)), fmt);
-            using (var outline = new Pen(Ink, S(7)) { LineJoin = LineJoin.Round }) g.DrawPath(outline, path);
-            using (var fill = new LinearGradientBrush(new Rectangle(0, S(24), 10, (int)em + S(10)), Yellow, ColorTranslator.FromHtml("#FF9A1E"), LinearGradientMode.Vertical)) g.FillPath(fill, path);
+            path.AddString("NEW SUPER PAPER BROS.", new FontFamily("Segoe UI Black") is { Name: "Segoe UI Black" } black ? black : new FontFamily("Segoe UI"),
+                           (int)FontStyle.Italic, em, new Point(r.Width / 2, S(22)), fmt);
+            // Bubble letters: a soft drop shadow, a thick white rim, then a red-to-orange fill.
+            using (var m = new Matrix()) { m.Translate(S(3), S(5)); using var shadowPath = (GraphicsPath)path.Clone(); shadowPath.Transform(m);
+                using var rim = new Pen(Color.FromArgb(70, 90, 60, 120), S(14)) { LineJoin = LineJoin.Round }; g.DrawPath(rim, shadowPath); }
+            using (var outline = new Pen(Color.White, S(12)) { LineJoin = LineJoin.Round }) g.DrawPath(outline, path);
+            using (var fill = new LinearGradientBrush(new Rectangle(0, S(22), 10, (int)em + S(14)), Red, Yellow, LinearGradientMode.Vertical)) g.FillPath(fill, path);
             using var sub = new Font("Segoe UI", 10.5f, FontStyle.Bold);
             var subText = "Super Paper Mario (Wii) on PC  -  made by JosiahG  -  v" + AppVersion;
             var subSize = g.MeasureString(subText, sub);
-            var subRect = new RectangleF(r.Width / 2f - subSize.Width / 2 - S(10), S(26) + em * 1.25f, subSize.Width + S(20), subSize.Height + S(2));
-            using (var tag = Rounded(Rectangle.Round(subRect), S(8))) { g.FillPath(new SolidBrush(Paper), tag); g.DrawPath(new Pen(Ink, S(2)), tag); }
-            g.DrawString(subText, sub, new SolidBrush(Ink), new PointF(r.Width / 2f, subRect.Y + S(1)), fmt);
+            var subRect = new RectangleF(r.Width / 2f - subSize.Width / 2 - S(14), S(26) + em * 1.3f, subSize.Width + S(28), subSize.Height + S(6));
+            using (var tag = Rounded(Rectangle.Round(subRect), (int)(subRect.Height / 2))) { g.FillPath(new SolidBrush(Paper), tag); g.DrawPath(new Pen(Mix(Sky, Color.White, 0.3f), S(3)), tag); }
+            g.DrawString(subText, sub, new SolidBrush(Ink), new PointF(r.Width / 2f, subRect.Y + S(3)), fmt);
         }
     }
 
@@ -355,17 +376,15 @@ sealed class MainForm : Form
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.InterpolationMode = InterpolationMode.Bilinear;
 
-        // Paper clouds drift right and wrap around.
-        using (var cloud = new SolidBrush(Color.FromArgb(240, 255, 255, 255)))
-            for (int i = 0; i < 4; i++)
-            {
-                float span = r.Width + S(240);
-                float x = (float)((i * span / 4 + t * S(10 + 5 * i)) % span) - S(120);
-                float y = S(14 + (i % 2) * 30);
-                for (int j = 0; j < 3; j++) g.FillEllipse(cloud, x + j * S(30), y - (j == 1 ? S(12) : 0), S(50), S(34));
-            }
+        // Polka dots drift diagonally and wrap around (Tomodachi Life).
+        int step = S(46), dot = S(16);
+        float shift = (float)(t * S(12) % step);
+        using (var dots = new SolidBrush(Color.FromArgb(120, 255, 255, 255)))
+            for (int row = -1; row * step < r.Height + step; row++)
+                for (int col = -1; col * step < r.Width + step; col++)
+                    g.FillEllipse(dots, col * step + (row % 2 == 0 ? 0 : step / 2) + shift, row * step + shift, dot, dot);
 
-        g.DrawImageUnscaled(headerTitle!, 0, 0);  // hills and title; Tippi flies in front of them
+        g.DrawImageUnscaled(headerTitle!, 0, 0);  // edge and title; Tippi flies in front of them
 
         // Tippi loops across the sky, trailing sparkles.
         double half = r.Width / 2.0 - S(220);
@@ -430,14 +449,16 @@ sealed class MainForm : Form
         {
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            var r = ((Control)s!).ClientRectangle;
+            var c = (Control)s!;
+            var r = c.ClientRectangle;
             r.Width -= S(8); r.Height -= S(8);
             r.Offset(S(2), S(2));
-            using var path = Rounded(r, S(14));
-            using var shadow = Rounded(new Rectangle(r.X + S(5), r.Y + S(5), r.Width, r.Height), S(14));
-            g.FillPath(new SolidBrush(Color.FromArgb(50, 0, 0, 0)), shadow);
+            var tile = c.Tag is Color t ? t : Sky;
+            using var path = Rounded(r, S(22));
+            using var shadow = Rounded(new Rectangle(r.X + S(4), r.Y + S(6), r.Width, r.Height), S(22));
+            g.FillPath(new SolidBrush(Color.FromArgb(40, 30, 30, 70)), shadow);
             g.FillPath(new SolidBrush(Paper), path);
-            g.DrawPath(new Pen(Ink, S(3)), path);
+            g.DrawPath(new Pen(Mix(tile, Color.White, 0.35f), S(5)), path);
         };
         // The body sizes to its content and the card scrolls only when that is taller than the card.
         var body = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = Paper };
@@ -466,13 +487,11 @@ sealed class MainForm : Form
 
     static Button Btn(string text, EventHandler onClick, Color? back = null)
     {
-        var b = new Button
+        var b = new PillButton
         {
-            Text = text, AutoSize = true, FlatStyle = FlatStyle.Flat, BackColor = back ?? Yellow, ForeColor = Ink,
+            Text = text, AutoSize = true, BackColor = back == Paper ? Mint : back ?? Yellow, ForeColor = Ink,
             Font = new Font("Segoe UI", 10.5f, FontStyle.Bold), Padding = S(10, 4, 10, 4), Margin = S(0, 6, 10, 6), Cursor = tippiHand,
         };
-        b.FlatAppearance.BorderColor = Ink;
-        b.FlatAppearance.BorderSize = S(2);
         b.Click += onClick;
         return b;
     }
@@ -500,8 +519,8 @@ sealed class MainForm : Form
         tipRow.Controls.Add(new PictureBox { Image = Sprite("tippi", S(48), S(48)), Size = S(48, 48), Margin = S(0, 0, 8, 0) });
         tipLabel = new Label
         {
-            AutoSize = true, MaximumSize = new Size(S(620), 0), BackColor = ColorTranslator.FromHtml("#FFF3C4"), ForeColor = Ink,
-            BorderStyle = BorderStyle.FixedSingle, Padding = S(10, 8, 10, 8), Cursor = tippiHand, Margin = S(0, 4, 0, 0),
+            AutoSize = true, MaximumSize = new Size(S(620), 0), BackColor = Mix(Pink, Color.White, 0.35f), ForeColor = Ink,
+            Padding = S(14, 10, 14, 10), Cursor = tippiHand, Margin = S(0, 4, 0, 0),
         };
         tipLabel.Click += (_, _) => NextTip();
         tipRow.Controls.Add(tipLabel);
@@ -829,7 +848,7 @@ sealed class MainForm : Form
             captureKey = KeyText(name);
         }
         capturing.Text = captureKey!;
-        capturing.BackColor = Paper;
+        capturing.BackColor = Mint;
         capturing = null;
     }
 
@@ -937,7 +956,7 @@ sealed class MainForm : Form
         playStatus.Text = ok ? "Disc: ready.  Mods: " + ModNames() : text;
         playStatus.ForeColor = ok ? Ink : Red;
         chooseDisc.Text = ok ? "Change disc..." : "Choose disc image (.iso, .ciso, .wbfs)...";
-        chooseDisc.BackColor = ok ? Paper : Yellow;
+        chooseDisc.BackColor = ok ? Mint : Yellow;
         dumpHelp.Visible = !ok;
         gameNote.Visible = tipRow.Visible = ok;
     }
@@ -952,13 +971,21 @@ sealed class MainForm : Form
     Control BuildModsPage()
     {
         var (card, body) = NewCard("Mods");
-        body.Controls.Add(Note("How to install a mod:\n" +
-                               "1. Click Open mods folder.\n" +
-                               "2. Put the mod's folder in it (one folder per mod).\n" +
-                               "3. Click Refresh. Ticked mods load when the game starts; untick one to turn it off."));
+        body.Controls.Add(Note("Install a mod from its .zip or its folder. Ticked mods load when the game starts; untick one to turn it off. " +
+                               "A mod holds a files folder (it replaces game files) and/or a textures folder."));
         var row = new FlowLayoutPanel { AutoSize = true, Margin = Padding.Empty };
-        row.Controls.Add(Btn("Open mods folder", (_, _) => Process.Start("explorer.exe", Directory.CreateDirectory(modsDir).FullName)));
-        row.Controls.Add(Btn("Refresh", (_, _) => LoadMods(), Paper));
+        row.Controls.Add(Btn("Install mod (.zip)...", (_, _) =>
+        {
+            using var dialog = new OpenFileDialog { Title = "Choose a mod (.zip)", Filter = "Mod archive (*.zip)|*.zip" };
+            if (dialog.ShowDialog(this) == DialogResult.OK) InstallMod(dialog.FileName);
+        }));
+        row.Controls.Add(Btn("Install mod folder...", (_, _) =>
+        {
+            using var dialog = new FolderBrowserDialog { Description = "Choose the mod's folder (the one holding files or textures)", UseDescriptionForTitle = true };
+            if (dialog.ShowDialog(this) == DialogResult.OK) InstallMod(dialog.SelectedPath);
+        }, Paper));
+        row.Controls.Add(Btn("Remove selected", (_, _) => RemoveSelectedMod(), Paper));
+        row.Controls.Add(Btn("Open mods folder", (_, _) => Process.Start("explorer.exe", Directory.CreateDirectory(modsDir).FullName), Paper));
         body.Controls.Add(row);
         modList = new ListView { View = View.Details, CheckBoxes = true, Size = S(660, 240), FullRowSelect = true, Font = new Font("Segoe UI", 10.5f), Margin = S(0, 6, 0, 6), HeaderStyle = ColumnHeaderStyle.Nonclickable };
         modList.Columns.Add("Installed mods", S(630));
@@ -974,6 +1001,59 @@ sealed class MainForm : Form
         return card;
     }
 
+    // Installs a mod from a .zip or a folder into mods\<name>. The mod's root is the folder holding files\ or textures\
+    // (zips often wrap it in one more folder). Zip entries that would land outside the target are refused.
+    void InstallMod(string source)
+    {
+        string? temp = null;
+        try
+        {
+            string from = source;
+            if (File.Exists(source))
+            {
+                temp = Path.Combine(Path.GetTempPath(), "nspb-mod-" + Guid.NewGuid().ToString("N"));
+                ModInstall.ExtractZip(source, temp);
+                from = temp;
+            }
+            var modRoot = ModInstall.FindRoot(from);
+            if (modRoot == null)
+            {
+                MessageBox.Show(this, "This doesn't look like a New Super Paper Bros. mod: it has no files or textures folder.", "Install mod", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            string name = ModInstall.SafeName(modRoot == temp ? Path.GetFileNameWithoutExtension(source) : Path.GetFileName(modRoot));
+            var dest = Path.Combine(modsDir, name);
+            if (Directory.Exists(dest))
+            {
+                if (MessageBox.Show(this, $"A mod called \"{name}\" is already installed. Replace it?", "Install mod", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+                Directory.Delete(dest, true);
+            }
+            ModInstall.CopyDir(modRoot, dest);
+            LoadMods();
+            RefreshStatus();
+            MessageBox.Show(this, $"Installed \"{name}\". It loads the next time the game starts.", "Install mod", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, "The mod could not be installed:\n" + e.Message, "Install mod", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            if (temp != null) try { Directory.Delete(temp, true); } catch (Exception) { }
+        }
+    }
+
+    void RemoveSelectedMod()
+    {
+        if (modList.SelectedItems.Count == 0) { MessageBox.Show(this, "Click a mod in the list first.", "Remove mod", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+        var item = modList.SelectedItems[0];
+        if (MessageBox.Show(this, $"Remove \"{item.Text}\"? Its folder is deleted.", "Remove mod", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+        try { Directory.Delete((string)item.Tag!, true); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { MessageBox.Show(this, "The mod could not be removed:\n" + e.Message, "Remove mod", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+        LoadMods();
+        RefreshStatus();
+    }
+
     void LoadMods()
     {
         modList.Items.Clear();
@@ -985,6 +1065,79 @@ sealed class MainForm : Form
     sealed class BufferedFlow : FlowLayoutPanel
     {
         public BufferedFlow() { DoubleBuffered = true; ResizeRedraw = true; }
+    }
+
+    // A Smash 4 menu tile: a coloured rounded block with bold white italic text. The selected one is brighter,
+    // ringed in white and nudged right; hovering lightens it.
+    sealed class TileButton : Button
+    {
+        public readonly Color Tile;
+        bool selected, hover;
+        public bool Selected { get => selected; set { selected = value; Invalidate(); } }
+        public TileButton(Color tile)
+        {
+            Tile = tile;
+            FlatStyle = FlatStyle.Flat;
+            FlatAppearance.BorderSize = 0;
+            BackColor = Cream;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
+            MouseEnter += (_, _) => { hover = true; Invalidate(); };
+            MouseLeave += (_, _) => { hover = false; Invalidate(); };
+        }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.Clear(Parent?.BackColor ?? Cream);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            int inset = selected ? 0 : S(10);  // the selected tile sticks out
+            var r = new Rectangle(inset, S(2), Width - inset - S(8), Height - S(10));
+            var fill = selected ? Mix(Tile, Color.White, 0.12f) : hover ? Mix(Tile, Color.White, 0.25f) : Mix(Tile, Cream, 0.35f);
+            using (var shadow = Rounded(new Rectangle(r.X + S(3), r.Y + S(5), r.Width, r.Height), S(14))) g.FillPath(new SolidBrush(Color.FromArgb(55, 30, 30, 60)), shadow);
+            using var path = Rounded(r, S(14));
+            using (var brush = new LinearGradientBrush(r, Mix(fill, Color.White, 0.18f), fill, LinearGradientMode.Vertical)) g.FillPath(brush, path);
+            if (selected) using (var ring = new Pen(Color.White, S(4))) g.DrawPath(ring, path);
+            // A glossy band over the top half, like the Wii U menus.
+            var gloss = new Rectangle(r.X + S(6), r.Y + S(4), r.Width - S(12), r.Height / 2 - S(4));
+            using (var shine = Rounded(gloss, S(10))) g.FillPath(new SolidBrush(Color.FromArgb(selected ? 60 : 38, 255, 255, 255)), shine);
+            TextRenderer.DrawText(g, Text, Font, new Rectangle(r.X + S(18), r.Y, r.Width - S(18), r.Height), Color.White,
+                                  TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPadding);
+        }
+    }
+
+    // Tomodachi Life's buttons: a bubbly pill with a light top, a darker lip underneath and dark text on light colours.
+    sealed class PillButton : Button
+    {
+        bool hover, down;
+        public PillButton()
+        {
+            FlatStyle = FlatStyle.Flat;
+            FlatAppearance.BorderSize = 0;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.SupportsTransparentBackColor, true);
+            MouseEnter += (_, _) => { hover = true; Invalidate(); };
+            MouseLeave += (_, _) => { hover = down = false; Invalidate(); };
+            MouseDown += (_, _) => { down = true; Invalidate(); };
+            MouseUp += (_, _) => { down = false; Invalidate(); };
+        }
+        public override Size GetPreferredSize(Size proposed)
+        {
+            var text = TextRenderer.MeasureText(Text, Font);
+            return new Size(text.Width + Padding.Horizontal + S(28), text.Height + Padding.Vertical + S(16));
+        }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.Clear(Parent?.BackColor ?? Paper);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            int lip = S(4), press = down ? lip - S(1) : 0;
+            var r = new Rectangle(S(1), S(1) + press, Width - S(3), Height - lip - S(3));
+            var face = hover ? Mix(BackColor, Color.White, 0.18f) : BackColor;
+            using (var under = Rounded(new Rectangle(r.X, r.Y + lip - press, r.Width, r.Height), r.Height / 2)) g.FillPath(new SolidBrush(Mix(BackColor, Ink, 0.35f)), under);
+            using var path = Rounded(r, r.Height / 2);
+            using (var brush = new LinearGradientBrush(r, Mix(face, Color.White, 0.35f), face, LinearGradientMode.Vertical)) g.FillPath(brush, path);
+            using (var edge = new Pen(Mix(BackColor, Ink, 0.25f), S(2))) g.DrawPath(edge, path);
+            bool light = BackColor.R * 0.299f + BackColor.G * 0.587f + BackColor.B * 0.114f > 170;  // perceived brightness
+            TextRenderer.DrawText(g, Text, Font, r, light ? Ink : Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        }
     }
 
     sealed class DoubleBufferedPanel : Panel
