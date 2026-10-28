@@ -201,6 +201,7 @@ def prepare(root, out, exe, disc):
                            display_mode='"windowed"', resolution_multiplier=os.environ.get('SPM_SWEEP_RES', '1.0'),
                            aspect_mode=os.environ.get('SPM_SWEEP_ASPECT', '2'),
                            frame_interpolation_fps=os.environ.get('SPM_SWEEP_INTERP', '0'),
+                           vsync=os.environ.get('SPM_SWEEP_VSYNC', 'false'),  # true to test V-Sync pacing
                            # off-screen (PrintWindow still captures it) so sweeps don't cover the user's desktop; SPM_SWEEP_ONSCREEN=1 shows it
                            window_x='100' if os.environ.get('SPM_SWEEP_ONSCREEN') else '-4000', window_y='100',
                            graphics_api=f'"{os.environ.get("SPM_SWEEP_GRAPHICS", "auto")}"').items():  # auto | d3d12 | vulkan

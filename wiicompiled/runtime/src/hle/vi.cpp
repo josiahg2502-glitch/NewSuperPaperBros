@@ -47,6 +47,7 @@
 #endif
 
 #include <aurora/aurora.h>
+#include <SDL3/SDL_video.h>
 
 // Forward declaration for OSWakeupThread - used to wake threads on VI retrace queue
 extern "C" void OSWakeupThread_HLE_801aaaa4(CpuContext* ctx);
@@ -189,6 +190,7 @@ struct DisplayLock {
     int k = 0;
     std::chrono::nanoseconds period{0};
     Clock::time_point vblank{};
+    bool phaseKnown = false;  // vblank is a real vblank time (DWM's period agreed with the display mode)
     Clock::time_point lastQuery{};
     bool logged = false;
 };
@@ -217,8 +219,24 @@ void RefreshDisplayLockLocked(Clock::time_point now) {
     info.cbSize = sizeof(info);
     LARGE_INTEGER frequency{}, qpcNow{};
     const HRESULT result = getTiming != nullptr ? getTiming(nullptr, &info) : E_NOTIMPL;
-    if (FAILED(result) || info.qpcRefreshPeriod == 0 || !::QueryPerformanceFrequency(&frequency) ||
-        !::QueryPerformanceCounter(&qpcNow)) {
+    const bool dwmOk = SUCCEEDED(result) && info.qpcRefreshPeriod != 0 && ::QueryPerformanceFrequency(&frequency) &&
+                       ::QueryPerformanceCounter(&qpcNow);
+    // The game window's display mode: DWM's timing is one clock for all displays and was 288-468 Hz on a
+    // 240 Hz screen next to a 60 Hz one, which left the lock off ("120 FPS needs to truly work").
+    double modeHz = 0.0;
+    int windowCount = 0;
+    if (SDL_Window** windows = SDL_GetWindows(&windowCount)) {
+        if (windowCount > 0)
+            if (const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(windows[0])))
+                modeHz = mode->refresh_rate;
+        SDL_free(windows);
+    }
+    const auto steadyNow = Clock::now();
+    const double nsPerTick = dwmOk ? 1e9 / static_cast<double>(frequency.QuadPart) : 0.0;
+    const double dwmHz = dwmOk ? 1e9 / (info.qpcRefreshPeriod * nsPerTick) : 0.0;
+    d.phaseKnown = dwmOk && (modeHz <= 1.0 || std::fabs(dwmHz - modeHz) < modeHz * 0.02);
+    const double hz = d.phaseKnown ? dwmHz : modeHz;
+    if (hz <= 1.0) {
         if (!d.logged) {
             d.logged = true;
             RT_LOGF(RT_TAG_VI, "V-Sync: no display timing (0x%08lX); the game keeps its own clock\n",
@@ -227,19 +245,18 @@ void RefreshDisplayLockLocked(Clock::time_point now) {
         d.valid = false;
         return;
     }
-    const auto steadyNow = Clock::now();
-    const double nsPerTick = 1e9 / static_cast<double>(frequency.QuadPart);
-    const auto period = std::chrono::nanoseconds(static_cast<int64_t>(info.qpcRefreshPeriod * nsPerTick));
-    const double hz = 1e9 / static_cast<double>(period.count());
+    const auto period = std::chrono::nanoseconds(static_cast<int64_t>(1e9 / hz));
     const int k = static_cast<int>(std::lround(hz / 60.0));
     d.valid = k >= 1 && k <= 8 && std::fabs(hz / k - 60.0) < 60.0 * 0.02;
     d.k = k;
     d.period = period;
-    d.vblank = steadyNow - std::chrono::nanoseconds(static_cast<int64_t>(
-                               static_cast<double>(qpcNow.QuadPart - static_cast<LONGLONG>(info.qpcVBlank)) * nsPerTick));
+    if (d.phaseKnown)
+        d.vblank = steadyNow - std::chrono::nanoseconds(static_cast<int64_t>(
+                                   static_cast<double>(qpcNow.QuadPart - static_cast<LONGLONG>(info.qpcVBlank)) * nsPerTick));
     if (!d.logged) {
         d.logged = true;
-        RT_LOGF(RT_TAG_VI, "V-Sync: display %.3f Hz, %s\n", hz,
+        RT_LOGF(RT_TAG_VI, "V-Sync: display %.3f Hz (DWM %.3f Hz, mode %.3f Hz%s), %s\n", hz, dwmHz, modeHz,
+                d.phaseKnown ? "" : ", no vblank phase",
                 d.valid ? (std::string("game clock locked at ") + std::to_string(k) + " refresh(es) per frame").c_str()
                         : "no whole fraction near 60 Hz; the game keeps its own clock");
     }
@@ -255,6 +272,7 @@ std::chrono::nanoseconds LockedIntervalAfter(Clock::time_point retrace) {
         return std::chrono::nanoseconds(0);
     }
     const int64_t period = d.period.count();
+    if (!d.phaseKnown) return std::chrono::nanoseconds(period * d.k);  // the rate alone, no phase pull
     // Presents go out about 6.5 ms after their retrace (aurora's kNativePresentOffsetNanos): put that
     // moment halfway between two vblanks, the most room either way.
     constexpr int64_t kPresentOffset = 6'500'000;
