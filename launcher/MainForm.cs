@@ -3,16 +3,17 @@ using System.Drawing.Drawing2D;
 
 namespace NewSuperPaperBros;
 
-// The launcher window, styled after Smash 4's menus (big coloured tiles, drifting stripes) and Tomodachi Life (pastel
-// polka dots, bubbly rounded shapes): a header, a column of page tiles (Play, Display, Controls, Mods) and one card per
-// page. Everything it changes goes to <game folder>\UserData\Config.toml (engine\ in a release, Play\ in the dev tree), read by the game at start.
+// The launcher window, laid out like a game's title screen (after Dusklight's launcher): an animated Super Paper Mario
+// scene darkened from the left, the logo, a column of big menu words (Play, Game, Display, Controls, Mods, Quit), disc
+// status bottom-left and version bottom-right. Game, Display, Controls and Mods open as a card over the dimmed scene,
+// with Back (or Escape) to return. Everything it changes goes to <game folder>\UserData\Config.toml (engine\ in a release, Play\ in the dev tree), read by the game at start.
 sealed class MainForm : Form
 {
     static readonly Color Cream = ColorTranslator.FromHtml("#EEF0F6"), Paper = Color.White,
         Ink = ColorTranslator.FromHtml("#3B3B52"), Yellow = ColorTranslator.FromHtml("#FFC83D"),
         Red = ColorTranslator.FromHtml("#EC3A55"), Sky = ColorTranslator.FromHtml("#6FC3FF"), Green = ColorTranslator.FromHtml("#6FD36A"),
         Pink = ColorTranslator.FromHtml("#FFD6EA"), Mint = ColorTranslator.FromHtml("#D3F5EA");
-    // Each page's tile colour, like Smash 4's main menu; its card wears a softer border of the same colour.
+    // Each page's colour: its card's border and heading.
     static readonly Color[] TileColors =
     {
         ColorTranslator.FromHtml("#EC3A55"), ColorTranslator.FromHtml("#3B8CFF"), ColorTranslator.FromHtml("#2EC27E"), ColorTranslator.FromHtml("#FF9A1F"),
@@ -33,10 +34,12 @@ sealed class MainForm : Form
     static readonly string AppVersion = typeof(MainForm).Assembly.GetName().Version is { } v ? $"{v.Major}.{v.Minor}.{v.Build}" : "?";
     readonly GameConfig config;
     readonly Dictionary<string, Image> sprites = new();
-    readonly Panel content = new DoubleBufferedPanel { Dock = DockStyle.Fill };
-    readonly List<(Button button, Control page)> pages = new();
+    readonly TitleView view;
+    readonly List<(string name, Control page)> pages = new();
+    readonly (string label, Action act)[] menu;
+    int openPage = -1;  // the page shown over the title screen, -1 = none
+    Button backButton = null!;
     Label playStatus = null!, dumpHelp = null!, gameNote = null!;
-    Control tipRow = null!;  // shown with gameNote once a disc is set up, so first-time setup stays short
     ListView modList = null!;
     Button? capturing;
     Func<bool>? cancelPadCapture;  // the Controls page's gamepad capture: Escape ends it
@@ -55,7 +58,6 @@ sealed class MainForm : Form
         this.selfTest = selfTest;
         this.screenshotDir = screenshotDir;
         k = DeviceDpi / 96f;
-        content.Padding = S(16, 12, 20, 16);
         (root, play, gameExe) = FindGame();
         // Zips drop the hidden attribute: keep the release's engine\ folder out of sight so only this exe shows.
         try
@@ -93,70 +95,79 @@ sealed class MainForm : Form
         if (screenshotDir != null) { StartPosition = FormStartPosition.Manual; Location = new Point(-6000, -6000); ShowInTaskbar = false; }  // off-screen
         DoubleBuffered = true;
 
-        var header = new DoubleBufferedPanel { Dock = DockStyle.Top, Height = S(150) };
-        header.Paint += PaintHeader;
-        // Smash 4's background: soft diagonal stripes sliding slowly behind the page.
-        content.Paint += (_, e) =>
+        // One full-window title screen; the pages open as cards on top of it.
+        view = new TitleView { Dock = DockStyle.Fill };
+        view.Draw = PaintTitle;
+        view.MouseMove += (_, e) =>
         {
-            var r = content.ClientRectangle;
-            int band = S(36);
-            float slide = (float)(T * S(8) % (band * 2));
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using var stripe = new SolidBrush(Color.FromArgb(70, 255, 255, 255));
-            for (float x = -r.Height - band * 2 + slide; x < r.Width; x += band * 2)
-                e.Graphics.FillPolygon(stripe, new[] { new PointF(x, r.Height), new PointF(x + band, r.Height), new PointF(x + band + r.Height, 0), new PointF(x + r.Height, 0) });
+            if (openPage >= 0) return;
+            hover = menuRects.FindIndex(r => r.Contains(e.Location));
+            view.Cursor = hover >= 0 || marioRect.Contains(e.Location) || luigiRect.Contains(e.Location) || merlonRect.Contains(e.Location) ||
+                          tippiRect.Contains(e.Location) || tipRect.Contains(e.Location) || discRect.Contains(e.Location) ? tippiHand : tippiCursor;
         };
-        var nav = new BufferedFlow { Dock = DockStyle.Left, Width = S(220), FlowDirection = FlowDirection.TopDown, Padding = S(16, 18, 0, 0), WrapContents = false };
-        nav.Paint += PaintNav;
-        // Click Mario or Luigi to make them hop, Tippi for another tip, Merlon to make him twirl.
-        header.MouseClick += (_, e) =>
+        view.MouseLeave += (_, _) => hover = -1;
+        // Click Mario or Luigi to make them hop, Merlon to make him twirl, Tippi (or her tip) for another tip.
+        view.MouseClick += (_, e) =>
         {
-            if (marioRect.Contains(e.Location)) jumpAt["mario"] = T;
+            if (openPage >= 0 || e.Button != MouseButtons.Left) return;
+            int i = menuRects.FindIndex(r => r.Contains(e.Location));
+            if (i >= 0) menu[i].act();
+            else if (discRect.Contains(e.Location)) OpenPage(0);
+            else if (marioRect.Contains(e.Location)) jumpAt["mario"] = T;
             else if (luigiRect.Contains(e.Location)) jumpAt["luigi"] = T;
-            else if (tippiRect.Contains(e.Location)) NextTip();
+            else if (merlonRect.Contains(e.Location)) jumpAt["merlon"] = T;
+            else if (tippiRect.Contains(e.Location) || tipRect.Contains(e.Location)) NextTip();
         };
-        header.MouseMove += (_, e) => header.Cursor = marioRect.Contains(e.Location) || luigiRect.Contains(e.Location) || tippiRect.Contains(e.Location) ? tippiHand : tippiCursor;
-        nav.MouseClick += (_, e) => { if (merlonRect.Contains(e.Location)) jumpAt["merlon"] = T; };
-        nav.MouseMove += (_, e) => nav.Cursor = merlonRect.Contains(e.Location) ? tippiHand : tippiCursor;
+        view.Resize += (_, _) => { LayoutPage(); if (openPage >= 0) FreezeScene(); };
+        backButton = Btn("◀  Back", (_, _) => ClosePage(), Paper);
+        backButton.Visible = false;
+        view.Controls.Add(backButton);
+        Controls.Add(view);
         var frame = new System.Windows.Forms.Timer { Interval = 33 };
-        frame.Tick += (_, _) =>
-        {
-            if (!animate || WindowState == FormWindowState.Minimized) return;
-            header.Invalidate();
-            content.Invalidate(false);  // the stripes around the card
-            nav.Invalidate(new Rectangle(0, navSpriteTop, nav.Width, Math.Max(0, nav.Height - navSpriteTop)));
-            float glow = (float)(Math.Sin(T * 3) + 1) / 2;  // PLAY breathes between two reds
-            playButton.BackColor = Color.FromArgb(Lerp(Red.R, 255, glow), Lerp(Red.G, 106, glow), Lerp(Red.B, 74, glow));
-        };
+        frame.Tick += (_, _) => { if (animate && openPage < 0 && WindowState != FormWindowState.Minimized) view.Invalidate(); };
         frame.Start();
-        Controls.Add(content);
-        Controls.Add(nav);
-        Controls.Add(header);
 
-        AddPage(nav, "Play", BuildPlayPage());
-        AddPage(nav, "Display", BuildDisplayPage());
-        AddPage(nav, "Controls", BuildControlsPage());
-        AddPage(nav, "Mods", BuildModsPage());
-        ShowPage(pages[0].button);
+        menu = new (string, Action)[]
+        {
+            ("Play", Launch), ("Game", () => OpenPage(0)), ("Display", () => OpenPage(1)), ("Controls", () => OpenPage(2)),
+            ("Mods", () => OpenPage(3)), ("Quit", Close),
+        };
+        AddPage("Game", BuildPlayPage());
+        AddPage("Display", BuildDisplayPage());
+        AddPage("Controls", BuildControlsPage());
+        AddPage("Mods", BuildModsPage());
+        RefreshStatus();
         Shown += (_, _) =>
         {
+            introAt = T;
             if (screenshotDir != null)
             {
-                // Headless visual check: every page drawn to <dir>\<page>.png.
+                // Headless visual check: the title screen and every page drawn to <dir>\<name>.png.
                 Directory.CreateDirectory(screenshotDir);
-                foreach (var p in pages)
+                introAt = -10;  // intro animation already done
+                void Shot(string name)
                 {
-                    ShowPage(p.button);
                     Application.DoEvents();
                     using var bmp = new Bitmap(Width, Height);
                     DrawToBitmap(bmp, new Rectangle(Point.Empty, Size));
-                    bmp.Save(Path.Combine(screenshotDir, p.button.Text.Replace(' ', '_') + ".png"));
+                    bmp.Save(Path.Combine(screenshotDir, name + ".png"));
                 }
+                hover = 0;
+                Shot("Title");
+                hover = -1;
+                for (int i = 0; i < pages.Count; i++) { OpenPage(i); Shot(pages[i].name); }
+                ClosePage();
                 using (var cur = new Bitmap(128, 64))
                 using (var g = Graphics.FromImage(cur)) { g.Clear(Sky); for (int i = 0; i < cursorBitmaps.Count; i++) g.DrawImageUnscaled(cursorBitmaps[i], i * 64, 0); cur.Save(Path.Combine(screenshotDir, "cursor.png")); }
                 Close();
             }
-            else if (selfTest) { foreach (var p in pages) ShowPage(p.button); Environment.ExitCode = !File.Exists(gameExe) ? 6 : !ModInstall.SelfCheck() ? 7 : !Gamepads.Ready ? 4 : Gamepads.Connected().All(p => Gamepads.Opens(p.id)) ? 0 : 5; Close(); }
+            else if (selfTest)
+            {
+                for (int i = 0; i < pages.Count; i++) OpenPage(i);
+                ClosePage();
+                Environment.ExitCode = !File.Exists(gameExe) ? 6 : !ModInstall.SelfCheck() ? 7 : !Gamepads.Ready ? 4 : Gamepads.Connected().All(p => Gamepads.Opens(p.id)) ? 0 : 5;
+                Close();
+            }
         };
     }
 
@@ -204,48 +215,61 @@ sealed class MainForm : Form
         if (changed) config.Save();
     }
 
-    void AddPage(FlowLayoutPanel nav, string title, Control page)
+    void AddPage(string name, Control page)
     {
-        var button = new TileButton(TileColors[pages.Count % TileColors.Length])
-        {
-            Text = title, Size = S(188, 64), Font = new Font("Segoe UI", 15f, FontStyle.Bold | FontStyle.Italic),
-            Margin = S(0, 0, 0, 12), Cursor = tippiHand,
-        };
-        button.Click += (_, _) => ShowPage(button);
+        var accent = TileColors[pages.Count % TileColors.Length];
         if (page is Panel card)
         {
-            card.Tag = button.Tile;  // the card's border and heading take the tile's colour
-            if (card.Controls.Count > 0 && card.Controls[0].Controls.Count > 0) card.Controls[0].Controls[0].ForeColor = Mix(button.Tile, Ink, 0.25f);
+            card.Tag = accent;  // the card's border and heading take the page's colour
+            card.BackColor = Color.Transparent;  // its rounded corners show the scene
+            if (card.Controls.Count > 0 && card.Controls[0].Controls.Count > 0) card.Controls[0].Controls[0].ForeColor = Mix(accent, Ink, 0.25f);
         }
-        page.Dock = DockStyle.Fill;
         page.Visible = false;
-        content.Controls.Add(page);
-        nav.Controls.Add(button);
-        pages.Add((button, page));
+        view.Controls.Add(page);
+        pages.Add((name, page));
     }
 
-    void ShowPage(Button button)
+    // A page opens as a card over the dimmed scene, with Back (or Escape) to return to the title screen.
+    void OpenPage(int index)
     {
-        foreach (var (b, page) in pages)
-        {
-            bool on = b == button;
-            ((TileButton)b).Selected = on;
-            page.Visible = on;
-        }
+        openPage = index;
+        FreezeScene();
+        for (int i = 0; i < pages.Count; i++) pages[i].page.Visible = i == index;
+        backButton.Visible = true;
+        LayoutPage();
         RefreshStatus();
     }
 
-    // ----- The fun bits: animated header and side column -----
+    void ClosePage()
+    {
+        if (openPage < 0) return;
+        cancelPadCapture?.Invoke();
+        foreach (var (_, page) in pages) page.Visible = false;
+        backButton.Visible = false;
+        openPage = -1;
+        view.BackgroundImage = null;
+        frozen?.Dispose();
+        frozen = null;
+        RefreshStatus();
+        view.Invalidate();
+    }
+
+    void LayoutPage()
+    {
+        if (openPage < 0) return;
+        backButton.Location = new Point(S(24), S(16));
+        int top = backButton.Bottom + S(8);
+        pages[openPage].page.Bounds = new Rectangle(S(20), top, view.ClientSize.Width - S(40), view.ClientSize.Height - top - S(16));
+    }
+
+    // ----- The fun bits: the animated scene and its characters -----
     // Everything moves on one clock; with Windows animations turned off the scene stands still.
     readonly bool animate = SystemInformation.UIEffectsEnabled;
     readonly Stopwatch clock = Stopwatch.StartNew();
     double T => animate ? clock.Elapsed.TotalSeconds : 1.0;
     readonly Dictionary<string, double> jumpAt = new();
     readonly Dictionary<(string, int, int, bool), Bitmap> scaled = new();
-    Bitmap? headerBack, headerTitle;
     Rectangle marioRect, luigiRect, tippiRect, merlonRect;
-    int navSpriteTop;
-    Button playButton = null!;
 
     static int Lerp(int a, int b, float f) => (int)(a + (b - a) * f);
 
@@ -323,122 +347,250 @@ sealed class MainForm : Form
     // How far into a click-triggered move (0..1), or -1 when none is playing.
     double Hop(string name, double seconds) => jumpAt.TryGetValue(name, out var at) && T - at < seconds ? (T - at) / seconds : -1;
 
-    void BuildHeaderLayers(Size size)
+    // ----- The title screen -----
+    // Like Dusklight's launcher: the game's world fills the window and darkens toward the left, where the logo and a
+    // column of big menu words sit; disc status in the bottom-left corner, version and Tippi's tip in the bottom-right.
+    // The world here is Lineland as Super Paper Mario draws it: flat paper hills with ink outlines, blocky clouds, a row
+    // of ? blocks, Mario, Luigi and Merlon standing on the grass and Tippi looping around them.
+    static readonly Color Accent = ColorTranslator.FromHtml("#FEE685"), ReadyGreen = ColorTranslator.FromHtml("#D8F999"),
+        ErrorPink = ColorTranslator.FromHtml("#FFC9C9"), Muted = ColorTranslator.FromHtml("#C9C3BE"), Night = ColorTranslator.FromHtml("#16122B");
+    Bitmap? sceneSky, sceneLand;
+    Bitmap? frozen;  // the dimmed scene behind an open page (child cards are transparent over BackgroundImage)
+
+    void BuildScene(Size size)
     {
-        headerBack?.Dispose();
-        headerTitle?.Dispose();
+        sceneSky?.Dispose();
+        sceneLand?.Dispose();
         var r = new Rectangle(Point.Empty, size);
-        headerBack = new Bitmap(size.Width, size.Height);
-        using (var g = Graphics.FromImage(headerBack))
+        sceneSky = new Bitmap(size.Width, size.Height);
+        using (var g = Graphics.FromImage(sceneSky))
+        using (var sky = new LinearGradientBrush(r, ColorTranslator.FromHtml("#62B8F2"), ColorTranslator.FromHtml("#D6F0FF"), LinearGradientMode.Vertical))
+            g.FillRectangle(sky, r);
+        sceneLand = new Bitmap(size.Width, size.Height);
+        using (var g = Graphics.FromImage(sceneLand))
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var sky = new LinearGradientBrush(r, Pink, ColorTranslator.FromHtml("#D9EEFF"), LinearGradientMode.Horizontal)) g.FillRectangle(sky, r);
-        }
-        headerTitle = new Bitmap(size.Width, size.Height);
-        using (var g = Graphics.FromImage(headerTitle))
-        {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            // A scalloped white edge along the bottom, like a Tomodachi Life window.
-            int bump = S(22);
-            using (var edge = new SolidBrush(Cream))
+            int ground = GroundY(size);
+            using var ink = new Pen(ColorTranslator.FromHtml("#1E2A1E"), S(4)) { LineJoin = LineJoin.Round };
+            // Two rows of paper hills, the far ones paler.
+            foreach (var (row, color, baseY) in new[] { (0, "#9BDB8A", ground - S(40)), (1, "#5CC85A", ground + S(10)) })
+                for (int i = -1; i < 7; i++)
+                {
+                    int rad = S(110 + 50 * ((i + row) % 3));
+                    var c = new Rectangle((int)(size.Width * (i + row * 0.5) / 5.0) - rad, baseY - rad + rad / 3, rad * 2, rad * 2);
+                    g.FillEllipse(new SolidBrush(ColorTranslator.FromHtml(color)), c);
+                    g.DrawEllipse(ink, c);
+                }
+            // The ground: a grass strip with a scalloped top over brown earth.
+            var earth = new Rectangle(0, ground, size.Width, size.Height - ground);
+            g.FillRectangle(new SolidBrush(ColorTranslator.FromHtml("#C98A4B")), earth);
+            using (var stripe = new Pen(ColorTranslator.FromHtml("#B0743A"), S(3)))
+                for (int x = -size.Height; x < size.Width; x += S(28)) g.DrawLine(stripe, x, size.Height, x + S(40), ground + S(24));
+            var grass = new Rectangle(0, ground, size.Width, S(22));
+            g.FillRectangle(new SolidBrush(ColorTranslator.FromHtml("#6FD36A")), grass);
+            for (int x = 0; x < size.Width; x += S(24)) g.FillEllipse(new SolidBrush(ColorTranslator.FromHtml("#6FD36A")), x - S(4), ground - S(9), S(32), S(22));
+            g.DrawLine(ink, 0, ground + S(22), size.Width, ground + S(22));
+            // A row of blocks floating over the right half: brick, ?, brick, ?.
+            int bs = S(54), bx = (int)(size.Width * 0.6), by = ground - S(250);
+            using var qFont = new Font("Segoe UI Black", 22f, FontStyle.Bold);
+            for (int i = 0; i < 4; i++)
             {
-                g.FillRectangle(edge, 0, r.Height - S(8), r.Width, S(8));
-                for (int x = -bump / 2; x < r.Width + bump; x += bump) g.FillEllipse(edge, x, r.Height - S(16), bump, bump);
+                var b = new Rectangle(bx + i * bs, by, bs, bs);
+                bool q = i % 2 == 1;
+                g.FillRectangle(new SolidBrush(ColorTranslator.FromHtml(q ? "#FFC83D" : "#D9793A")), b);
+                if (q) TextRenderer.DrawText(g, "?", qFont, b, ColorTranslator.FromHtml("#7A4A14"), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                else
+                    using (var mortar = new Pen(ColorTranslator.FromHtml("#8E4A1E"), S(2)))
+                    {
+                        g.DrawLine(mortar, b.X, b.Y + bs / 2, b.Right, b.Y + bs / 2);
+                        g.DrawLine(mortar, b.X + bs / 2, b.Y, b.X + bs / 2, b.Y + bs / 2);
+                    }
+                g.DrawRectangle(ink, b);
             }
-            using var path = new GraphicsPath();
-            var fmt = new StringFormat { Alignment = StringAlignment.Center };
-            // Shrink the title if the window is narrow, so it never runs under the sprites.
-            float em = Math.Min(S(46), (r.Width - S(2 * 210)) / 12.5f);
-            path.AddString("NEW SUPER PAPER BROS.", new FontFamily("Segoe UI Black") is { Name: "Segoe UI Black" } black ? black : new FontFamily("Segoe UI"),
-                           (int)FontStyle.Italic, em, new Point(r.Width / 2, S(22)), fmt);
-            // Bubble letters: a soft drop shadow, a thick white rim, then a red-to-orange fill.
-            using (var m = new Matrix()) { m.Translate(S(3), S(5)); using var shadowPath = (GraphicsPath)path.Clone(); shadowPath.Transform(m);
-                using var rim = new Pen(Color.FromArgb(70, 90, 60, 120), S(14)) { LineJoin = LineJoin.Round }; g.DrawPath(rim, shadowPath); }
-            using (var outline = new Pen(Color.White, S(12)) { LineJoin = LineJoin.Round }) g.DrawPath(outline, path);
-            using (var fill = new LinearGradientBrush(new Rectangle(0, S(22), 10, (int)em + S(14)), Red, Yellow, LinearGradientMode.Vertical)) g.FillPath(fill, path);
-            using var sub = new Font("Segoe UI", 10.5f, FontStyle.Bold);
-            var subText = "Super Paper Mario (Wii) on PC  -  made by JosiahG  -  v" + AppVersion;
-            var subSize = g.MeasureString(subText, sub);
-            var subRect = new RectangleF(r.Width / 2f - subSize.Width / 2 - S(14), S(26) + em * 1.3f, subSize.Width + S(28), subSize.Height + S(6));
-            using (var tag = Rounded(Rectangle.Round(subRect), (int)(subRect.Height / 2))) { g.FillPath(new SolidBrush(Paper), tag); g.DrawPath(new Pen(Mix(Sky, Color.White, 0.3f), S(3)), tag); }
-            g.DrawString(subText, sub, new SolidBrush(Ink), new PointF(r.Width / 2f, subRect.Y + S(3)), fmt);
         }
     }
 
-    void PaintHeader(object? sender, PaintEventArgs e)
+    int GroundY(Size size) => size.Height - Math.Max(S(120), size.Height / 5);
+
+    // The animated world (sky, drifting clouds, land, characters), with no menu: also what stays behind an open page.
+    void PaintWorld(Graphics g, Size size)
     {
-        var g = e.Graphics;
-        var r = ((Control)sender!).ClientRectangle;
-        if (r.Width <= 0 || r.Height <= 0) return;
-        if (headerBack == null || headerBack.Size != r.Size) BuildHeaderLayers(r.Size);
+        if (sceneSky == null || sceneSky.Size != size) BuildScene(size);
         double t = T;
-        g.DrawImageUnscaled(headerBack!, 0, 0);
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.InterpolationMode = InterpolationMode.Bilinear;
+        g.DrawImageUnscaled(sceneSky!, 0, 0);
+        // Blocky paper clouds drift right and wrap around.
+        using (var cloud = new SolidBrush(Color.White))
+        using (var edge = new Pen(ColorTranslator.FromHtml("#9CC6E6"), S(3)))
+            for (int i = 0; i < 5; i++)
+            {
+                float span = size.Width + S(320);
+                float x = (float)((i * span / 5 + t * S(8 + 4 * i)) % span) - S(160);
+                float y = S(40 + (i % 3) * 70);
+                var parts = new[] { new RectangleF(x, y, S(120), S(40)), new RectangleF(x + S(30), y - S(26), S(66), S(30)) };
+                foreach (var p in parts) g.DrawRectangle(edge, p.X, p.Y, p.Width, p.Height);
+                foreach (var p in parts) g.FillRectangle(cloud, p);
+            }
+        g.DrawImageUnscaled(sceneLand!, 0, 0);
 
-        // Polka dots drift diagonally and wrap around (Tomodachi Life).
-        int step = S(46), dot = S(16);
-        float shift = (float)(t * S(12) % step);
-        using (var dots = new SolidBrush(Color.FromArgb(120, 255, 255, 255)))
-            for (int row = -1; row * step < r.Height + step; row++)
-                for (int col = -1; col * step < r.Width + step; col++)
-                    g.FillEllipse(dots, col * step + (row % 2 == 0 ? 0 : step / 2) + shift, row * step + shift, dot, dot);
+        int ground = GroundY(size);
+        float Lift(string name, double phase)
+        {
+            double hop = Hop(name, 0.7);
+            return (float)(Math.Abs(Math.Sin(t * 2.2 + phase)) * S(4) + (hop < 0 ? 0 : Math.Sin(hop * Math.PI) * S(40)));
+        }
+        int h = S(150);
+        marioRect = new Rectangle((int)(size.Width * 0.66), ground - h + S(6) - (int)Lift("mario", 0), S(124), h);
+        luigiRect = new Rectangle((int)(size.Width * 0.82), ground - h + S(6) - (int)Lift("luigi", 1.3), S(118), h);
+        // Merlon floats a little behind them; a click makes him twirl (squeezed to a sliver and back, a paper turn).
+        int ms = S(170);
+        double twirl = Hop("merlon", 0.9), turn = twirl < 0 ? 1 : Math.Cos(twirl * Math.PI * 2);
+        int mw = Math.Max(1, (int)(ms * Math.Abs(turn)));
+        merlonRect = new Rectangle((int)(size.Width * 0.5), ground - ms - S(14) - (int)((Math.Sin(t * 1.6) + 1) * S(6)), ms, ms);
+        g.DrawImage(Sprite("merlon", ms, ms, turn < 0), new Rectangle(merlonRect.X + (ms - mw) / 2, merlonRect.Y, mw, ms));
+        g.DrawImage(Sprite("mario", marioRect.Width, marioRect.Height), marioRect.Location);
+        g.DrawImage(Sprite("luigi", luigiRect.Width, luigiRect.Height, true), luigiRect.Location);
 
-        g.DrawImageUnscaled(headerTitle!, 0, 0);  // edge and title; Tippi flies in front of them
-
-        // Tippi loops across the sky, trailing sparkles.
-        double half = r.Width / 2.0 - S(220);
-        PointF At(double when) => new((float)(r.Width / 2.0 + Math.Sin(when * 0.45) * half), (float)(S(40) + Math.Sin(when * 1.3) * S(16)));
+        // Tippi loops over the right half, trailing sparkles.
+        PointF At(double when) => new((float)(size.Width * 0.72 + Math.Sin(when * 0.5) * size.Width * 0.2), (float)(size.Height * 0.32 + Math.Sin(when * 1.3) * S(40)));
         using (var fade = new System.Drawing.Imaging.ImageAttributes())
             for (int k = 6; k >= 1; k--)
             {
                 var p = At(t - k * 0.09);
-                int size = S(26 - k * 2);
+                int sz = S(30 - k * 2);
                 fade.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix { Matrix33 = 1f - k / 7f });
-                g.DrawImage(Sprite("sparkle", size, size), new Rectangle((int)p.X - size / 2, (int)p.Y - size / 2, size, size), 0, 0, size, size, GraphicsUnit.Pixel, fade);
+                g.DrawImage(Sprite("sparkle", sz, sz), new Rectangle((int)p.X - sz / 2, (int)p.Y - sz / 2, sz, sz), 0, 0, sz, sz, GraphicsUnit.Pixel, fade);
             }
         var tp = At(t);
-        bool headingLeft = Math.Cos(t * 0.45) < 0;
-        int flap = (int)(S(56) * (0.82 + 0.18 * Math.Abs(Math.Sin(t * 9))));
-        tippiRect = new Rectangle((int)tp.X - S(28), (int)tp.Y - flap / 2, S(56), flap);
-        g.DrawImage(Sprite("tippi", S(56), S(56), headingLeft), tippiRect);
-
-        // Mario and Luigi bounce on the hills; a click makes one hop.
-        float Lift(string name, double phase)
-        {
-            double hop = Hop(name, 0.7);
-            return (float)(Math.Abs(Math.Sin(t * 2.2 + phase)) * S(5) + (hop < 0 ? 0 : Math.Sin(hop * Math.PI) * S(28)));
-        }
-        marioRect = new Rectangle(S(24), S(30) - (int)Lift("mario", 0), S(96), S(116));
-        luigiRect = new Rectangle(r.Width - S(120), S(30) - (int)Lift("luigi", 1.3), S(92), S(116));
-        g.DrawImage(Sprite("mario", marioRect.Width, marioRect.Height), marioRect.Location);
-        g.DrawImage(Sprite("luigi", luigiRect.Width, luigiRect.Height), luigiRect.Location);
+        int flap = (int)(S(64) * (0.82 + 0.18 * Math.Abs(Math.Sin(t * 9))));
+        tippiRect = new Rectangle((int)tp.X - S(32), (int)tp.Y - flap / 2, S(64), flap);
+        g.DrawImage(Sprite("tippi", S(64), S(64), Math.Cos(t * 0.5) < 0), tippiRect);
     }
 
-    // Merlon hovers under the menu buttons, when the window is tall enough for him; a click makes him twirl.
-    void PaintNav(object? sender, PaintEventArgs e)
+    // Text with Dusklight's soft dark glow behind it, so it reads over the scene.
+    static void GlowText(Graphics g, string text, Font font, Point at, Color color, int alpha = 255, TextFormatFlags flags = TextFormatFlags.NoPadding)
     {
-        var nav = (Control)sender!;
-        var g = e.Graphics;
-        double t = T;
-        navSpriteTop = pages.Count > 0 ? pages[^1].button.Bottom + S(10) : 0;
-        int bottom = nav.ClientSize.Height - S(10);
-        int room = bottom - navSpriteTop - S(12);
-        if (room < S(90)) { merlonRect = Rectangle.Empty; return; }
-        int size = Math.Min(S(170), room);
-        double twirl = Hop("merlon", 0.9);
-        // The twirl squeezes him to a sliver and back (a paper turn), flipping him halfway.
-        double turn = twirl < 0 ? 1 : Math.Cos(twirl * Math.PI * 2);
-        int w = Math.Max(1, (int)(size * Math.Abs(turn)));
-        int y = bottom - size - S(12) - (int)((Math.Sin(t * 1.6) + 1) * S(6));
-        int cx = (nav.Width + S(16)) / 2;
-        merlonRect = new Rectangle(cx - size / 2, y, size, size);
-        // A soft shadow on the ground under him, smaller while he floats higher.
-        int shadowW = size * 2 / 3 - (int)((Math.Sin(t * 1.6) + 1) * S(8));
-        using (var shadow = new SolidBrush(Color.FromArgb(45, 58, 42, 24)))
-            g.FillEllipse(shadow, cx - shadowW / 2, bottom - S(10), shadowW, S(12));
-        g.InterpolationMode = InterpolationMode.Bilinear;
-        g.DrawImage(Sprite("merlon", size, size, turn < 0), new Rectangle(cx - w / 2, y, w, size));
+        TextRenderer.DrawText(g, text, font, new Point(at.X + S(1), at.Y + S(2)), Color.FromArgb(alpha * 200 / 255, 0, 0, 0), flags);
+        TextRenderer.DrawText(g, text, font, at, Color.FromArgb(alpha, color), flags);
+    }
+
+    readonly Font menuFont = new("Segoe UI", 22f, FontStyle.Bold), cornerFont = new("Segoe UI", 12f, FontStyle.Bold),
+        smallFont = new("Segoe UI", 10.5f), eyebrowFont = new("Segoe UI", 14f);
+    readonly List<Rectangle> menuRects = new();
+    Rectangle tipRect, discRect;
+    int hover = -1;          // the menu item under the mouse or chosen with the arrow keys
+    double introAt = 1e9;    // when the window first showed: items fade and rise in one after another
+
+    // How far item `i` is into its fade-in (0..1).
+    float Intro(int i) => (float)Math.Clamp((T - introAt - 0.1 * i) / 0.35, 0, 1);
+
+    void PaintTitle(Graphics g)
+    {
+        var size = view.ClientSize;
+        if (size.Width <= 0 || size.Height <= 0 || openPage >= 0) return;
+        PaintWorld(g, size);
+        // Dusklight's darkening: deep night from the left edge to clear by two thirds, plus a little along the bottom.
+        var r = new Rectangle(Point.Empty, size);
+        using (var left = new LinearGradientBrush(new Rectangle(0, 0, (int)(size.Width * 0.68) + 1, size.Height), Color.FromArgb(235, Night), Color.FromArgb(0, Night), LinearGradientMode.Horizontal))
+            g.FillRectangle(left, 0, 0, (int)(size.Width * 0.68), size.Height);
+        using (var bottom = new LinearGradientBrush(new Rectangle(0, size.Height - S(150), size.Width, S(151)), Color.FromArgb(0, Night), Color.FromArgb(170, Night), LinearGradientMode.Vertical))
+            g.FillRectangle(bottom, 0, size.Height - S(150), size.Width, S(150));
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+
+        int x = S(64), y = Math.Max(S(40), size.Height / 2 - S(300));
+        // The eyebrow and the logo.
+        float a0 = Intro(0);
+        int rise = (int)(S(10) * (1 - a0));
+        GlowText(g, "JosiahG presents", eyebrowFont, new Point(x + S(4), y + rise), Color.White, (int)(255 * a0));
+        y += S(34);
+        float em = Math.Min(S(58), (size.Width * 0.45f) / 6.2f);
+        using (var path = new GraphicsPath())
+        {
+            var family = new FontFamily("Segoe UI Black") is { Name: "Segoe UI Black" } black ? black : new FontFamily("Segoe UI");
+            path.AddString("NEW SUPER", family, (int)FontStyle.Italic, em, new Point(x, y + rise), StringFormat.GenericDefault);
+            path.AddString("PAPER BROS.", family, (int)FontStyle.Italic, em, new Point(x, y + rise + (int)(em * 0.98f)), StringFormat.GenericDefault);
+            int alpha = (int)(255 * a0);
+            using (var m = new Matrix()) { m.Translate(S(4), S(6)); using var shadowPath = (GraphicsPath)path.Clone(); shadowPath.Transform(m);
+                using var drop = new Pen(Color.FromArgb(alpha * 140 / 255, 0, 0, 0), S(12)) { LineJoin = LineJoin.Round }; g.DrawPath(drop, shadowPath); }
+            using (var rim = new Pen(Color.FromArgb(alpha, Color.White), S(10)) { LineJoin = LineJoin.Round }) g.DrawPath(rim, path);
+            var b = path.GetBounds();
+            using (var fill = new LinearGradientBrush(new RectangleF(b.X, b.Y - 1, b.Width, b.Height / 2 + 2), Color.FromArgb(alpha, Red), Color.FromArgb(alpha, Yellow), LinearGradientMode.Vertical)
+                   { WrapMode = WrapMode.TileFlipY })
+                g.FillPath(fill, path);
+            y = (int)b.Bottom + S(40);
+        }
+
+        // The menu: big words that light up with a yellow fade on hover, like Dusklight's.
+        menuRects.Clear();
+        int rowH = S(52), rowW = S(380);
+        for (int i = 0; i < menu.Length; i++)
+        {
+            float a = Intro(i + 1);
+            var row = new Rectangle(x - S(16), y + (int)(S(10) * (1 - a)), rowW, rowH);
+            menuRects.Add(row);
+            bool on = i == hover;
+            if (on)
+                using (var path = Rounded(row, S(10)))
+                using (var glow = new LinearGradientBrush(row, Accent, Color.FromArgb(0, Accent), LinearGradientMode.Horizontal))
+                    g.FillPath(glow, path);
+            var label = menu[i].label.ToUpperInvariant();
+            var at = new Point(row.X + S(16), row.Y + (rowH - TextRenderer.MeasureText(label, menuFont).Height) / 2);
+            if (on) TextRenderer.DrawText(g, label, menuFont, at, Night, TextFormatFlags.NoPadding);
+            else GlowText(g, label, menuFont, at, Color.White, (int)(255 * a));
+            y += rowH + S(8);
+        }
+
+        // Bottom-left: is a disc set up (click it to open Game).
+        var (ok, _, _) = DiscStatus();
+        float ac = Intro(menu.Length + 1);
+        int cy = size.Height - S(84);
+        string id = ok ? DiscGameId() : "";
+        string status = ok ? $"✔  Super Paper Mario ({(id == "R8PP01" ? "Europe" : "USA")}) is ready" : "✖  No game disc yet: choose Game to set it up";
+        GlowText(g, status, cornerFont, new Point(x, cy), ok ? ReadyGreen : ErrorPink, (int)(255 * ac));
+        var statusSize = TextRenderer.MeasureText(status, cornerFont);
+        discRect = new Rectangle(x, cy, statusSize.Width, statusSize.Height);
+        GlowText(g, "Mods: " + ModNames(), smallFont, new Point(x, cy + S(30)), Muted, (int)(255 * ac));
+
+        // Bottom-right: Tippi's tip (click for another) and the version.
+        int right = size.Width - S(48);
+        string tip = "Tippi: " + Tips[Math.Max(0, tipIndex)];
+        var tipSize = TextRenderer.MeasureText(tip, smallFont);
+        tipRect = new Rectangle(right - tipSize.Width, cy, tipSize.Width, tipSize.Height);
+        GlowText(g, tip, smallFont, tipRect.Location, Color.White, (int)(230 * ac));
+        string ver = "v" + AppVersion + "   made by JosiahG";
+        var verSize = TextRenderer.MeasureText(ver, smallFont);
+        GlowText(g, ver, smallFont, new Point(right - verSize.Width, cy + S(30)), Muted, (int)(255 * ac));
+    }
+
+    // The scene behind an open page: frozen and dimmed (the cards over it are transparent at their corners).
+    void FreezeScene()
+    {
+        var size = view.ClientSize;
+        if (size.Width <= 0 || size.Height <= 0) return;
+        var bmp = new Bitmap(size.Width, size.Height);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            PaintWorld(g, size);
+            using var dim = new SolidBrush(Color.FromArgb(150, Night));
+            g.FillRectangle(dim, 0, 0, size.Width, size.Height);
+        }
+        view.BackgroundImage = bmp;
+        frozen?.Dispose();
+        frozen = bmp;
+    }
+
+    // The title screen's drawing surface: all painting comes from MainForm.PaintTitle.
+    sealed class TitleView : Panel
+    {
+        public Action<Graphics>? Draw;
+        public TitleView()
+        {
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+            BackgroundImageLayout = ImageLayout.None;
+            BackColor = Night;
+        }
+        protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); Draw?.Invoke(e.Graphics); }
     }
 
     // A white paper card holding one page's controls, top to bottom.
@@ -499,12 +651,7 @@ sealed class MainForm : Form
     // ----- Play -----
     Control BuildPlayPage()
     {
-        var (card, body) = NewCard("Ready to play?");
-        playButton = Btn("PLAY", (_, _) => Launch(), Red);
-        playButton.ForeColor = Color.White;
-        playButton.Font = new Font("Segoe UI", 24f, FontStyle.Bold);
-        playButton.Padding = S(60, 8, 60, 8);
-        body.Controls.Add(playButton);
+        var (card, body) = NewCard("Game");
         playStatus = Note("");
         playStatus.Font = new Font("Segoe UI", 10.5f, FontStyle.Bold);
         body.Controls.Add(playStatus);
@@ -514,20 +661,7 @@ sealed class MainForm : Form
         body.Controls.Add(Choice("Language (European disc)", "language", new[] { ("English", "\"en\""), ("Français", "\"fr\""), ("Deutsch", "\"de\""), ("Español", "\"es\""), ("Italiano", "\"it\"") }, "game"));
         body.Controls.Add(gameNote = Note("The game starts borderless at 1080p. " +
                                "In the game, F10 opens the settings menu (resolution, aspect, controllers, audio) and F11 switches between fullscreen and a window."));
-        // Tippi's tips: click the bubble (or Tippi in the sky) for another one.
-        var tipRow = new FlowLayoutPanel { AutoSize = true, Margin = S(0, 10, 0, 6) };
-        tipRow.Controls.Add(new PictureBox { Image = Sprite("tippi", S(48), S(48)), Size = S(48, 48), Margin = S(0, 0, 8, 0) });
-        tipLabel = new Label
-        {
-            AutoSize = true, MaximumSize = new Size(S(620), 0), BackColor = Mix(Pink, Color.White, 0.35f), ForeColor = Ink,
-            Padding = S(14, 10, 14, 10), Cursor = tippiHand, Margin = S(0, 4, 0, 0),
-        };
-        tipLabel.Click += (_, _) => NextTip();
-        tipRow.Controls.Add(tipLabel);
-        tipIndex = Random.Shared.Next(Tips.Length) - 1;
-        NextTip();
-        body.Controls.Add(tipRow);
-        this.tipRow = tipRow;
+        tipIndex = Random.Shared.Next(Tips.Length);  // Tippi's tip in the title screen's corner
         var row = new FlowLayoutPanel { AutoSize = true, Margin = Padding.Empty };
         row.Controls.Add(Btn("Open game folder", (_, _) => Process.Start("explorer.exe", play), Paper));
         row.Controls.Add(Btn("Open saves folder", (_, _) => Process.Start("explorer.exe", Directory.CreateDirectory(SaveDataDir()).FullName), Paper));
@@ -574,25 +708,21 @@ sealed class MainForm : Form
         "Something look odd at 120 FPS? Turn frame interpolation off on the Display page.",
         "Open saves folder takes you straight to your saves. A backup now and then never hurts.",
         "When two mods change the same file, the one whose name comes later wins.",
-        "Click Mario or Luigi up there. Go on.",
-        "Merlon is down there by the menu. Give him a click.",
+        "Click Mario or Luigi over there. Go on.",
+        "Merlon twirls if you click him. He loves that.",
+        "Click me for another tip!",
     };
-    Label? tipLabel;
     int tipIndex;
 
-    void NextTip()
-    {
-        tipIndex = (tipIndex + 1) % Tips.Length;
-        if (tipLabel != null) tipLabel.Text = "Tippi says: " + Tips[tipIndex];
-    }
+    void NextTip() => tipIndex = (tipIndex + 1) % Tips.Length;
 
     void Launch()
     {
         var (ok, text, _) = DiscStatus();
         if (!ok)
         {
-            MessageBox.Show(this, text + "\n\nChoose your disc image with the button under PLAY first.", "New Super Paper Bros.", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            ShowPage(pages[0].button);
+            MessageBox.Show(this, text + "\n\nChoose your disc image on the Game page first.", "New Super Paper Bros.", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            OpenPage(0);
             return;
         }
         var exe = gameExe;
@@ -834,6 +964,16 @@ sealed class MainForm : Form
         if (capturing == null)
         {
             if (e.KeyCode == Keys.Escape && cancelPadCapture?.Invoke() == true) { e.Handled = true; return; }
+            if (openPage >= 0 && (e.KeyCode == Keys.Escape || e.KeyCode == Keys.Back) && ActiveControl is not TextBox) { ClosePage(); e.Handled = true; return; }
+            // The title screen's menu: arrow keys move, Enter or Space picks.
+            if (openPage < 0 && e.KeyCode is Keys.Up or Keys.Down)
+            {
+                hover = hover < 0 ? 0 : (hover + (e.KeyCode == Keys.Down ? 1 : menu.Length - 1)) % menu.Length;
+                view.Invalidate();
+                e.Handled = true;
+                return;
+            }
+            if (openPage < 0 && hover >= 0 && e.KeyCode is Keys.Enter or Keys.Space) { menu[hover].act(); e.Handled = true; return; }
             base.OnKeyDown(e);
             return;
         }
@@ -958,7 +1098,8 @@ sealed class MainForm : Form
         chooseDisc.Text = ok ? "Change disc..." : "Choose disc image (.iso, .ciso, .wbfs)...";
         chooseDisc.BackColor = ok ? Mint : Yellow;
         dumpHelp.Visible = !ok;
-        gameNote.Visible = tipRow.Visible = ok;
+        gameNote.Visible = ok;
+        view.Invalidate();
     }
 
     string ModNames()
@@ -1062,48 +1203,6 @@ sealed class MainForm : Form
             modList.Items.Add(new ListViewItem(Path.GetFileName(dir)) { Tag = dir, Checked = !File.Exists(Path.Combine(dir, "disabled")) });
     }
 
-    sealed class BufferedFlow : FlowLayoutPanel
-    {
-        public BufferedFlow() { DoubleBuffered = true; ResizeRedraw = true; }
-    }
-
-    // A Smash 4 menu tile: a coloured rounded block with bold white italic text. The selected one is brighter,
-    // ringed in white and nudged right; hovering lightens it.
-    sealed class TileButton : Button
-    {
-        public readonly Color Tile;
-        bool selected, hover;
-        public bool Selected { get => selected; set { selected = value; Invalidate(); } }
-        public TileButton(Color tile)
-        {
-            Tile = tile;
-            FlatStyle = FlatStyle.Flat;
-            FlatAppearance.BorderSize = 0;
-            BackColor = Cream;
-            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
-            MouseEnter += (_, _) => { hover = true; Invalidate(); };
-            MouseLeave += (_, _) => { hover = false; Invalidate(); };
-        }
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            var g = e.Graphics;
-            g.Clear(Parent?.BackColor ?? Cream);
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            int inset = selected ? 0 : S(10);  // the selected tile sticks out
-            var r = new Rectangle(inset, S(2), Width - inset - S(8), Height - S(10));
-            var fill = selected ? Mix(Tile, Color.White, 0.12f) : hover ? Mix(Tile, Color.White, 0.25f) : Mix(Tile, Cream, 0.35f);
-            using (var shadow = Rounded(new Rectangle(r.X + S(3), r.Y + S(5), r.Width, r.Height), S(14))) g.FillPath(new SolidBrush(Color.FromArgb(55, 30, 30, 60)), shadow);
-            using var path = Rounded(r, S(14));
-            using (var brush = new LinearGradientBrush(r, Mix(fill, Color.White, 0.18f), fill, LinearGradientMode.Vertical)) g.FillPath(brush, path);
-            if (selected) using (var ring = new Pen(Color.White, S(4))) g.DrawPath(ring, path);
-            // A glossy band over the top half, like the Wii U menus.
-            var gloss = new Rectangle(r.X + S(6), r.Y + S(4), r.Width - S(12), r.Height / 2 - S(4));
-            using (var shine = Rounded(gloss, S(10))) g.FillPath(new SolidBrush(Color.FromArgb(selected ? 60 : 38, 255, 255, 255)), shine);
-            TextRenderer.DrawText(g, Text, Font, new Rectangle(r.X + S(18), r.Y, r.Width - S(18), r.Height), Color.White,
-                                  TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPadding);
-        }
-    }
-
     // Tomodachi Life's buttons: a bubbly pill with a light top, a darker lip underneath and dark text on light colours.
     sealed class PillButton : Button
     {
@@ -1127,6 +1226,7 @@ sealed class MainForm : Form
         {
             var g = e.Graphics;
             g.Clear(Parent?.BackColor ?? Paper);
+            if (Parent?.BackgroundImage is { } scene) g.DrawImageUnscaled(scene, -Left, -Top);  // over the title screen's scene
             g.SmoothingMode = SmoothingMode.AntiAlias;
             int lip = S(4), press = down ? lip - S(1) : 0;
             var r = new Rectangle(S(1), S(1) + press, Width - S(3), Height - lip - S(3));
