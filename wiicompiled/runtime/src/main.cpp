@@ -145,6 +145,7 @@ void ConfigureWindowsFatalDialogBehavior() {
 // A busy PC (browsers, launchers, sync and antivirus tools) delays the game's threads when they wake
 // for a frame, which shows as dropped frames at 60. Run above normal priority, and opt out of
 // Windows' power throttling (EcoQoS), which can slow the process down and coarsen its timers.
+std::string g_cpuSetNote;
 void RaiseWindowsProcessPriority() {
     if (!::SetPriorityClass(::GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS)) {
         RT_LOG(RT_TAG_RUNTIME) << "SetPriorityClass failed: " << ::GetLastError() << std::endl;
@@ -164,6 +165,38 @@ void RaiseWindowsProcessPriority() {
         if (!setInfo(::GetCurrentProcess(), kProcessPowerThrottling, &state, sizeof(state))) {
             state.ControlMask = kExecutionSpeed;  // before Windows 11 the timer flag is unknown
             setInfo(::GetCurrentProcess(), kProcessPowerThrottling, &state, sizeof(state));
+        }
+    }
+    // Hybrid CPUs (Intel 12th gen and later): keep the game on its performance cores. On an i5-13400F the
+    // game thread now and then landed on an efficiency core, where a frame's GX work took 9-12 ms instead of
+    // 3, enough to miss frames at 60 and most inserted frames at 120-240 FPS.
+    using GetCpuSetsFn = BOOL(WINAPI*)(PSYSTEM_CPU_SET_INFORMATION, ULONG, PULONG, HANDLE, ULONG);
+    using SetDefaultCpuSetsFn = BOOL(WINAPI*)(HANDLE, const ULONG*, ULONG);
+    HMODULE kernel = ::GetModuleHandleW(L"kernel32.dll");
+    const auto getCpuSets = reinterpret_cast<GetCpuSetsFn>(reinterpret_cast<void*>(::GetProcAddress(kernel, "GetSystemCpuSetInformation")));
+    const auto setDefaultCpuSets =
+        reinterpret_cast<SetDefaultCpuSetsFn>(reinterpret_cast<void*>(::GetProcAddress(kernel, "SetProcessDefaultCpuSets")));
+    ULONG length = 0;
+    if (getCpuSets && setDefaultCpuSets) getCpuSets(nullptr, 0, &length, ::GetCurrentProcess(), 0);
+    std::vector<uint8_t> buffer(length);
+    if (length && getCpuSets(reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(buffer.data()), length, &length,
+                             ::GetCurrentProcess(), 0)) {
+        std::vector<std::pair<ULONG, BYTE>> sets;  // id, efficiency class (higher = faster)
+        for (size_t at = 0; at + sizeof(SYSTEM_CPU_SET_INFORMATION) <= length;) {
+            const auto* info = reinterpret_cast<const SYSTEM_CPU_SET_INFORMATION*>(buffer.data() + at);
+            if (info->Size == 0) break;
+            if (info->Type == CpuSetInformation) sets.emplace_back(info->CpuSet.Id, info->CpuSet.EfficiencyClass);
+            at += info->Size;
+        }
+        BYTE fastest = 0;
+        for (const auto& [id, cls] : sets) fastest = std::max(fastest, cls);
+        std::vector<ULONG> fast;
+        for (const auto& [id, cls] : sets)
+            if (cls == fastest) fast.push_back(id);
+        if (!fast.empty() && fast.size() < sets.size() && fast.size() >= 4 &&
+            setDefaultCpuSets(::GetCurrentProcess(), fast.data(), static_cast<ULONG>(fast.size()))) {
+            g_cpuSetNote = "hybrid CPU: the game runs on its " + std::to_string(fast.size()) + " performance threads (of " +
+                           std::to_string(sets.size()) + ")";  // logged once logging is up
         }
     }
 }
@@ -1407,6 +1440,9 @@ int RuntimeMain(int argc, char** argv) {
             throw std::invalid_argument("The game runtime does not accept command-line options; use Config.toml through the installed host.");
         }
         RuntimeConfigFile::LogLoadedConfig();
+#if defined(_WIN32)
+        if (!g_cpuSetNote.empty()) RT_LOGF(RT_TAG_RUNTIME, "%s\n", g_cpuSetNote.c_str());
+#endif
 #if defined(__ANDROID__)
         if (const auto line = RuntimePlatform::PinCurrentThreadToFastCores(); !line.empty())
             RT_LOGF(RT_TAG_RUNTIME, "fast cores %s\n", line.c_str());

@@ -52,6 +52,7 @@ void set_frame_interpolation_fps(uint32_t targetFps) noexcept;
 // Feedback for the adaptive slot controller: whether the producer met its
 // retrace boundary for the frame that just presented.
 void report_producer_paced(bool paced) noexcept;
+void set_display_periods_per_frame(uint32_t periods) noexcept;
 
 void begin_frame_interpolation() noexcept;
 void finalize_frame_interpolation() noexcept;

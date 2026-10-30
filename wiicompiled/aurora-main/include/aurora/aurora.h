@@ -176,6 +176,9 @@ void aurora_set_present_schedule(uint64_t baseNanos, uint64_t intervalNanos);
 // Reports whether the frame about to be sealed met its display boundary. Interpolation sizes its
 // slot group from this, backing off after misses. Only paced presents may report.
 void aurora_report_producer_paced(bool paced);
+// Display refreshes per game frame while V-Sync locks the game to the display (4 at 240 Hz), else 0. Inserted
+// frames then come only in counts that divide it, so every frame stays on screen equally long.
+void aurora_set_display_periods_per_frame(uint32_t periods);
 void aurora_request_frame_capture(uint32_t frame, const char* outputPath);
 bool aurora_flush_efb_copies_to_ram();
 bool aurora_flush_efb_copy_to_ram(void* dest);

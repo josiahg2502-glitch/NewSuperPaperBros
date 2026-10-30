@@ -283,6 +283,18 @@ constexpr uint32_t kPacingRestoreWindows = 5;
 std::atomic_uint32_t s_pacingCleanWindows{0};
 std::atomic_uint32_t s_pacingRestoreNeeded{kPacingRestoreWindows};  // doubles per reduction: no flapping
 
+// Display refreshes per game frame under the V-Sync lock (0: none). A slot count whose group does not divide it
+// judders: 180 FPS on a 240 Hz screen shows frames for 1, 1, 2 refreshes.
+std::atomic_uint32_t s_displayPeriodsPerFrame{0};
+bool slots_even(uint32_t slots) noexcept {
+  const uint32_t periods = s_displayPeriodsPerFrame.load(std::memory_order_acquire);
+  return periods == 0 || periods % (slots + 1) == 0;
+}
+uint32_t even_slots_at_most(uint32_t slots) noexcept {
+  while (slots > 0 && !slots_even(slots)) --slots;
+  return slots;
+}
+
 uint32_t maximum_interpolation_samples() noexcept {
   const uint32_t targetFps = frame_interpolation_fps();
   if (targetFps == 0) {
@@ -779,13 +791,13 @@ void report_producer_paced(bool paced) noexcept {
   // Window complete: adjust the target one step at most, then start over. At
   // one decision per window this cannot spam the log or flap within a second.
   uint32_t target =
-      std::min(s_interpolationSampleTarget.load(std::memory_order_acquire), maximumSamples);
+      even_slots_at_most(std::min(s_interpolationSampleTarget.load(std::memory_order_acquire), maximumSamples));
   const bool clean = misses * 100u <= frames * kPacingRestorePercent;
   const uint32_t cleanWindows = clean ? s_pacingCleanWindows.load(std::memory_order_acquire) + 1 : 0;
   s_pacingCleanWindows.store(cleanWindows, std::memory_order_release);
   if (misses * 100u >= frames * kPacingReducePercent) {
     if (target > 0) {
-      --target;
+      target = even_slots_at_most(target - 1);
       s_pacingRestoreNeeded.store(std::min(s_pacingRestoreNeeded.load(std::memory_order_acquire) * 2, 64u),
                                   std::memory_order_release);
       s_diagSlotReductions.fetch_add(1, std::memory_order_relaxed);
@@ -793,8 +805,10 @@ void report_producer_paced(bool paced) noexcept {
                target, misses, frames);
     }
   } else if (clean && cleanWindows >= s_pacingRestoreNeeded.load(std::memory_order_acquire)) {
-    if (target < maximumSamples) {
-      ++target;
+    uint32_t next = target + 1;
+    while (next < maximumSamples && !slots_even(next)) ++next;
+    if (next <= maximumSamples && slots_even(next)) {
+      target = next;
       s_pacingCleanWindows.store(0, std::memory_order_release);
       Log.info("interpolation slots restored to {}: {}/{} frames overran their retrace budget",
                target, misses, frames);
@@ -803,6 +817,10 @@ void report_producer_paced(bool paced) noexcept {
   s_interpolationSampleTarget.store(target, std::memory_order_release);
   s_pacingWindowFrames.store(0, std::memory_order_release);
   s_pacingWindowMisses.store(0, std::memory_order_release);
+}
+
+void set_display_periods_per_frame(uint32_t periods) noexcept {
+  s_displayPeriodsPerFrame.store(periods, std::memory_order_release);
 }
 
 void begin_frame_interpolation() noexcept {
@@ -814,8 +832,8 @@ void begin_frame_interpolation() noexcept {
   // Latch the slot count for the frame starting here; see s_activeInterpolationSamples
   // for why it cannot move again until the seal.
   s_activeInterpolationSamples.store(
-      std::min(s_interpolationSampleTarget.load(std::memory_order_acquire),
-               maximum_interpolation_samples()),
+      even_slots_at_most(std::min(s_interpolationSampleTarget.load(std::memory_order_acquire),
+                                  maximum_interpolation_samples())),
       std::memory_order_release);
   // Normally empty (finalize swapped and recycled); an aborted frame can leave
   // entries behind, whose matrix blocks go back to the pool here.

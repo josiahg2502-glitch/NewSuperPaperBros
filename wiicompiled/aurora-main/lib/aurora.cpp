@@ -54,6 +54,7 @@ namespace aurora::gx {
 // Producer pacing feedback for the adaptive slot count, defined in lib/gx/shader_info.cpp;
 // declared here so the C entry point at the bottom of this file can forward to it.
 void report_producer_paced(bool paced) noexcept;
+void set_display_periods_per_frame(uint32_t periods) noexcept;
 } // namespace aurora::gx
 #endif
 
@@ -1055,8 +1056,10 @@ bool present_presentation_job(const PresentationJob& job) {
                 const double mean = sum / s_gaps.size();
                 int off = 0;
                 for (const double g : s_gaps) off += std::fabs(g - mean) > mean * 0.25;
-                Log.info("Present cadence: mean {:.3f} ms, sd {:.3f}, min {:.3f}, max {:.3f}, {} of {} off by >25%", mean,
-                         std::sqrt((std::max)(0.0, sq / s_gaps.size() - mean * mean)), lo, hi, off, s_gaps.size());
+                std::string first;  // the first gaps in order: shows a pattern (pairs, a skip every n) at a glance
+                for (size_t i = 0; i < 16 && i < s_gaps.size(); ++i) first += fmt::format(" {:.1f}", s_gaps[i]);
+                Log.info("Present cadence: mean {:.3f} ms, sd {:.3f}, min {:.3f}, max {:.3f}, {} of {} off by >25%;{}", mean,
+                         std::sqrt((std::max)(0.0, sq / s_gaps.size() - mean * mean)), lo, hi, off, s_gaps.size(), first);
                 s_gaps.clear();
               }
             }
@@ -2118,6 +2121,13 @@ bool aurora_wait_for_frame_worker_for(uint32_t timeoutMicros) {
 void aurora_set_present_schedule(uint64_t baseNanos, uint64_t intervalNanos) {
   aurora::g_presentScheduleBaseNanos.store(baseNanos, std::memory_order_release);
   aurora::g_presentScheduleIntervalNanos.store(intervalNanos, std::memory_order_release);
+}
+void aurora_set_display_periods_per_frame(uint32_t periods) {
+#ifdef AURORA_ENABLE_GX
+  aurora::gx::set_display_periods_per_frame(periods);
+#else
+  (void)periods;
+#endif
 }
 void aurora_report_producer_paced(bool paced) {
 #ifdef AURORA_ENABLE_GX

@@ -206,7 +206,9 @@ def prepare(root, out, exe, disc):
                            frame_interpolation_fps=os.environ.get('SPM_SWEEP_INTERP', '0'),
                            vsync=os.environ.get('SPM_SWEEP_VSYNC', 'false'),  # true to test V-Sync pacing
                            # off-screen (PrintWindow still captures it) so sweeps don't cover the user's desktop; SPM_SWEEP_ONSCREEN=1 shows it
-                           window_x='100' if os.environ.get('SPM_SWEEP_ONSCREEN') else '-4000', window_y='100',
+                           # SPM_SWEEP_WINDOW_POS=x,y: another hidden spot, e.g. 0,3000 below a 240 Hz primary screen (its vblank timing)
+                           window_x=(os.environ.get('SPM_SWEEP_WINDOW_POS') or ('100,' if os.environ.get('SPM_SWEEP_ONSCREEN') else '-4000,')).split(',')[0],
+                           window_y=(os.environ.get('SPM_SWEEP_WINDOW_POS') or '0,100').split(',')[1],
                            graphics_api=f'"{os.environ.get("SPM_SWEEP_GRAPHICS", "auto")}"').items():  # auto | d3d12 | vulkan
         config, n = re.subn(rf'(?m)^{key}\s*=.*$', f'{key} = {value}', config)
         if not n:  # key absent from the user's file: add it under [video]

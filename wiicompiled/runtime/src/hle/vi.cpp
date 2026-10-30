@@ -202,8 +202,8 @@ DisplayLock g_displayLock;  // under g_viMutex
 // DWM's timing is one clock for every display (wrong for a 240 Hz screen next to a 60 Hz one), and without a
 // phase the frames land wherever the clock started, sometimes right on a vblank edge, where they slip back and forth.
 struct VBlankClock {
-    std::atomic<int64_t> lastNs{0};    // steady-clock time of the latest vblank
-    std::atomic<int64_t> periodNs{0};  // averaged period
+    std::atomic<int64_t> lastNs{0};    // steady-clock time of the latest vblank on the grid
+    std::atomic<int64_t> periodNs{0};  // the display mode's period, set by RefreshDisplayLockLocked
     std::atomic<HMONITOR> monitor{nullptr};
     std::once_flag started;
 };
@@ -221,7 +221,6 @@ void VBlankThread() {
     IDXGIOutput* output = nullptr;
     HMONITOR outputMonitor = nullptr;
     int64_t previous = 0;
-    double average = 0.0;
     for (;;) {
         const HMONITOR want = g_vblankClock.monitor.load();
         if (want != outputMonitor) {  // the window moved to another monitor: find its output
@@ -229,8 +228,7 @@ void VBlankThread() {
             output = nullptr;
             outputMonitor = want;
             previous = 0;
-            average = 0.0;
-            g_vblankClock.periodNs = 0;
+            g_vblankClock.lastNs = 0;
             IDXGIAdapter1* adapter = nullptr;
             for (UINT a = 0; !output && factory->EnumAdapters1(a, &adapter) != DXGI_ERROR_NOT_FOUND; ++a) {
                 IDXGIOutput* candidate = nullptr;
@@ -246,25 +244,21 @@ void VBlankThread() {
             std::this_thread::sleep_for(250ms);
             continue;
         }
+        // The rate comes from the display mode (exact); these wakeups only give the phase. They jitter and now and
+        // then return early (an average of their spacing read 244 Hz on a 240.3 Hz screen), so a stamp counts only
+        // when it lies a whole number of periods, within 5%, after the last one that counted.
         const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count();
-        if (previous != 0) {
-            const int64_t delta = now - previous;
-            if (delta > 2'000'000 && delta < 50'000'000) {  // a missed wakeup spans two periods: skipped
-                const bool settled = average > 0.0 && std::fabs(delta - average) < average * 0.25;
-                if (average <= 0.0) average = static_cast<double>(delta);
-                else if (settled) average += (delta - average) / 64.0;
-                static int unsettled = 0, samples = 0;
-                unsettled = settled ? 0 : unsettled + 1;
-                if (unsettled >= 8) {  // the first sample was an outlier, or the refresh rate changed
-                    average = static_cast<double>(delta);
-                    unsettled = samples = 0;
-                    g_vblankClock.periodNs = 0;
-                }
-                if (settled && ++samples >= 32) g_vblankClock.periodNs = static_cast<int64_t>(average);
-            }
+        const int64_t period = g_vblankClock.periodNs.load();
+        if (period <= 0) continue;
+        const int64_t delta = now - previous;
+        const int64_t periods = (delta + period / 2) / period;
+        const bool onGrid = previous != 0 && periods >= 1 && std::llabs(delta - periods * period) < period / 20;
+        static int misses = 0;
+        if (onGrid || ++misses >= 8 || previous == 0) {  // 8 off-grid in a row: the grid itself moved
+            misses = 0;
+            previous = now;
+            if (onGrid) g_vblankClock.lastNs = now;
         }
-        previous = now;
-        g_vblankClock.lastNs = now;
     }
 }
 #endif
@@ -313,14 +307,15 @@ void RefreshDisplayLockLocked(Clock::time_point now) {
     const auto steadyNow = Clock::now();
     const double nsPerTick = dwmOk ? 1e9 / static_cast<double>(frequency.QuadPart) : 0.0;
     const double dwmHz = dwmOk ? 1e9 / (info.qpcRefreshPeriod * nsPerTick) : 0.0;
-    d.phaseKnown = dwmOk && (modeHz <= 1.0 || std::fabs(dwmHz - modeHz) < modeHz * 0.02);
-    double hz = d.phaseKnown ? dwmHz : modeHz;
-    // The window's own monitor, measured: preferred over DWM whenever it agrees with the display mode.
-    const int64_t vblankPeriod = g_vblankClock.periodNs.load(), vblankLast = g_vblankClock.lastNs.load();
+    // The rate: the window's display mode (exact; DWM read 240.33 and 258.7 Hz for a 240.30 Hz screen). DWM's
+    // vblank phase is used only while its rate agrees closely.
+    d.phaseKnown = dwmOk && (modeHz <= 1.0 || std::fabs(dwmHz - modeHz) < modeHz * 0.005);
+    const double hz = modeHz > 1.0 ? modeHz : dwmHz;
+    if (hz > 1.0) g_vblankClock.periodNs = static_cast<int64_t>(1e9 / hz);
+    // The phase: the window's own monitor's vblanks (VBlankThread), when it has seen one lately.
+    const int64_t vblankLast = g_vblankClock.lastNs.load();
     const int64_t steadyNs = std::chrono::duration_cast<std::chrono::nanoseconds>(steadyNow.time_since_epoch()).count();
-    const bool measured = vblankPeriod > 0 && steadyNs - vblankLast < 200'000'000 &&
-                          (modeHz <= 1.0 || std::fabs(1e9 / vblankPeriod - modeHz) < modeHz * 0.02);
-    if (measured) hz = 1e9 / static_cast<double>(vblankPeriod);
+    const bool measured = vblankLast != 0 && steadyNs - vblankLast < 200'000'000;
     if (hz <= 1.0) {
         if (!d.logged) {
             d.logged = true;
@@ -345,7 +340,7 @@ void RefreshDisplayLockLocked(Clock::time_point now) {
     static bool loggedMeasured = false;
     if (measured && !loggedMeasured) {
         loggedMeasured = true;
-        RT_LOGF(RT_TAG_VI, "V-Sync: the window's monitor measures %.3f Hz; frames are timed to its vblanks (%d per frame)\n",
+        RT_LOGF(RT_TAG_VI, "V-Sync: frames are timed to the vblanks of the window's monitor (%.3f Hz, %d per frame)\n",
                 hz, k);
     }
     if (!d.logged) {
@@ -683,6 +678,7 @@ void AdvanceRetrace(CpuContext* ctx, Clock::time_point retraceStamp, bool servic
         g_vi.lastRetrace = retraceStamp;
         RefreshDisplayLockLocked(Clock::now());
         g_vi.lockedInterval = LockedIntervalAfter(retraceStamp);
+        aurora_set_display_periods_per_frame(g_displayLock.valid ? static_cast<uint32_t>(g_displayLock.k) : 0u);
         retraceValue = g_vi.retraceCount;
         preCb = g_vi.preRetraceCallback;
         postCb = g_vi.postRetraceCallback;
