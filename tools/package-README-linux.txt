@@ -16,7 +16,9 @@ Save anywhere: Options > Game > Save game saves to the file you are playing, rig
 Fast-forward: hold F on the keyboard, or click the right stick on a controller (Options > Game sets the speed,
 or makes it a toggle).
 
-Cheats: Options > Cheats. Gecko codes from Dolphin work too: put the game's Dolphin .ini (R8PE01.ini or R8PP01.ini)
+Cheats: Options > Cheats has them all built in: infinite HP, 999 coins, infinite 3D time, 9999 arcade tokens,
+score, attack and max HP boosts, any item or dish, all catch cards and maps, every character and Pixl, switching
+character anywhere, and warping to any room. Gecko codes from Dolphin work too: put the game's Dolphin .ini (R8PE01.ini or R8PP01.ini)
 in the cheats folder (Options > Cheats > Open the cheats folder). Codes that run PowerPC code can't work here and say so.
 
 Mods: Options > Mods > Open the mods folder, put a mod's .zip or folder in it, and start the game again. Supported:

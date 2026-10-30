@@ -3320,7 +3320,7 @@ std::vector<OptRow> OptionsRows(int tab) {
         rows.push_back({"9999 arcade tokens", OnOff(s_tokens), [](int) { SpmMapSweep::SetMaxArcadeTokens(s_tokens = !s_tokens); },
                         "For Mr. Game Guy's arcade in Flipside."});
         rows.push_back({"Score +10,000", "", [](int d) { if (d == 0) SpmMapSweep::AddScore(10000); },
-                        "Adds 10,000 points to your score."});
+                        "Adds 10,000 points to your score; levels go up as the game counts them."});
         rows.push_back({"Attack +1", "", [](int d) { if (d == 0) SpmMapSweep::AddAttack(1); }, "Stronger stomps and hits. Saved with your game."});
         rows.push_back({"Max HP +5", "", [](int d) { if (d == 0) SpmMapSweep::AddMaxHp(5); }, "Also refills your HP. Saved with your game."});
         {
