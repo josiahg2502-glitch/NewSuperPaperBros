@@ -139,6 +139,9 @@ PPC_NATIVE_OVERRIDE_VOID(8028df8c, GX__SetDispCopyGamma_8016fc24, (uint32_t g), 
 // Copy Execution
 // ============================================================================
 
+// Time the game spent at the end of its frames waiting for the render worker (vi.cpp's frame log).
+std::atomic<uint64_t> g_copyDispWorkerWaitNanos{0};
+
 extern "C" void GX__CopyDisp_8016fc38(uint32_t da, uint32_t c) {
     EnsureAuroraFrameActive();
     // GX copies are FIFO-ordered on hardware. Drain submitted draws before
@@ -152,7 +155,11 @@ extern "C" void GX__CopyDisp_8016fc38(uint32_t da, uint32_t c) {
     // Present immediately so post-copy draws don't leak into this frame. Join at the DONE phase
     // (not the cheaper SEALED phase GXDrawDone waits for) because ImGui's draw lists, owned by
     // Aurora's render worker, replay during encode; aurora_end_frame would join here anyway.
+    const auto waitStart = std::chrono::steady_clock::now();
     aurora_wait_for_frame_worker();
+    g_copyDispWorkerWaitNanos.fetch_add(
+        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - waitStart).count()),
+        std::memory_order_relaxed);
     settings_overlay::Draw();
     // Seal, pace to the VI retrace boundary (Aurora renders the sealed frame
     // during the wait), and pre-warm the next frame.

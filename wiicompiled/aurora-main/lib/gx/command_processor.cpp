@@ -1,3 +1,6 @@
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>  // __rdtsc for the process() timing stat
+#endif
 #include <set>
 #include <cstdio>
 #include <absl/container/flat_hash_set.h>
@@ -549,18 +552,38 @@ static bool StatTiming() {
   return on;
 #endif
 }
+// The CPU's cycle counter where there is one: process() runs ~20k times a frame and two steady_clock reads
+// per call were a fifth of the game thread's time in its slowest frames. Totals are kept in ticks and
+// turned into nanoseconds when read (stat_ticks_to_ns).
+#if defined(__x86_64__) || defined(_M_X64)
+static inline uint64_t stat_ticks() noexcept { return __rdtsc(); }
+#else
+static inline uint64_t stat_ticks() noexcept {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+#endif
+uint64_t stat_ticks_to_ns(uint64_t ticks) noexcept {
+#if defined(__x86_64__) || defined(_M_X64)
+  static const uint64_t startTicks = stat_ticks();
+  static const auto startTime = std::chrono::steady_clock::now();
+  static double nsPerTick = 0.0;
+  const double elapsedNs = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - startTime).count();
+  if (elapsedNs > 2e8) nsPerTick = elapsedNs / static_cast<double>(stat_ticks() - startTicks);  // after 0.2 s
+  return nsPerTick > 0.0 ? static_cast<uint64_t>(static_cast<double>(ticks) * nsPerTick) : ticks / 3;  // ~3 GHz until then
+#else
+  return ticks;
+#endif
+}
 struct ProcessTimer {
-  std::chrono::steady_clock::time_point start{};
+  uint64_t start = 0;
   ProcessTimer() {
     if (StatTiming() && t_statDepth++ == 0) {
-      start = std::chrono::steady_clock::now();
+      start = stat_ticks();
     }
   }
   ~ProcessTimer() {
     if (StatTiming() && --t_statDepth == 0) {
-      const auto elapsed =
-          std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
-      g_statProcessTotalNanos.fetch_add(elapsed, std::memory_order_relaxed);
+      g_statProcessTotalNanos.fetch_add(stat_ticks() - start, std::memory_order_relaxed);  // ticks, see stat_ticks_to_ns
     }
   }
 };
@@ -3320,13 +3343,13 @@ extern "C" void AuroraTakeCopyStats(uint64_t* copies, uint64_t* creates) {
 }
 
 extern "C" uint64_t AuroraGxProcessNanosTotal() {
-  return aurora::gx::fifo::g_statProcessTotalNanos.load(std::memory_order_relaxed);
+  return aurora::gx::fifo::stat_ticks_to_ns(aurora::gx::fifo::g_statProcessTotalNanos.load(std::memory_order_relaxed));
 }
 
 extern "C" void AuroraTakeGxStats(uint64_t* processNanos, uint64_t* lockNanos, uint64_t* draws) {
   static uint64_t s_takenProcessNanos = 0;  // single caller: the VI present path
   const uint64_t total = aurora::gx::fifo::g_statProcessTotalNanos.load(std::memory_order_relaxed);
-  *processNanos = total - s_takenProcessNanos;
+  *processNanos = aurora::gx::fifo::stat_ticks_to_ns(total - s_takenProcessNanos);
   s_takenProcessNanos = total;
   *lockNanos = aurora::gx::fifo::g_statLockNanos.exchange(0, std::memory_order_relaxed);
   *draws = aurora::gx::fifo::g_statDraws.exchange(0, std::memory_order_relaxed);

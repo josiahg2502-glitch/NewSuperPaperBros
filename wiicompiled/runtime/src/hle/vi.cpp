@@ -972,6 +972,7 @@ static bool LogFpsEnabled() {
 
 // dvd.cpp: time in the game's disc reads since start, and their count.
 uint64_t DvdReadNanosTotal();
+extern std::atomic<uint64_t> g_copyDispWorkerWaitNanos;  // gx_copy.cpp
 uint32_t DvdReadCount();
 
 void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
@@ -1110,11 +1111,14 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     if (presentedXfb) {
         static Clock::time_point s_lastEnd{}, s_windowStart{};
         static int s_logged = 0;
-        static uint64_t s_lastGx = 0, s_lastDvd = 0;
+        static uint64_t s_lastGx = 0, s_lastDvd = 0, s_lastWorker = 0;
         static uint32_t s_lastDvdReads = 0;
         const uint64_t gxTotal = AuroraGxProcessNanosTotal();
         const double gxMs = (gxTotal - s_lastGx) / 1e6;
         s_lastGx = gxTotal;
+        const uint64_t workerTotal = g_copyDispWorkerWaitNanos.load(std::memory_order_relaxed);
+        const double workerMs = (workerTotal - s_lastWorker) / 1e6;
+        s_lastWorker = workerTotal;
         const uint64_t dvdTotal = DvdReadNanosTotal();
         const uint32_t dvdReads = DvdReadCount();
         const double dvdMs = (dvdTotal - s_lastDvd) / 1e6;
@@ -1132,9 +1136,9 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                 uint32_t sceneWord = 0;
                 Memory::TryRead32(0x80428730u, sceneWord);
                 RT_LOGF(RT_TAG_VI,
-                        "slow frame %.1f ms (scene 0x%03X): game %.2f (gx %.2f, disc %.2f in %u reads), present %.2f, "
+                        "slow frame %.1f ms (scene 0x%03X): game %.2f (gx %.2f, worker wait %.2f, disc %.2f in %u reads), present %.2f, "
                         "end_frame %.2f, pace %.2f\n",
-                        frame, sceneWord & 0xFFFFu, ms(presentStart - s_lastEnd), gxMs, dvdMs, frameReads,
+                        frame, sceneWord & 0xFFFFu, ms(presentStart - s_lastEnd), gxMs, workerMs, dvdMs, frameReads,
                         ms(endFrameStart - presentStart),
                         ms(paceStart - endFrameStart), ms(now - paceStart));
             }
@@ -1164,10 +1168,14 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             AuroraTakeGxStats(&gxNanos, &lockNanos, &draws);
             uint64_t copies = 0, creates = 0;
             AuroraTakeCopyStats(&copies, &creates);
+            static uint64_t s_lastWorkerWait = 0;
+            const uint64_t workerTotal = g_copyDispWorkerWaitNanos.load(std::memory_order_relaxed);
+            const uint64_t workerWait = workerTotal - s_lastWorkerWait;
+            s_lastWorkerWait = workerTotal;
             RT_LOGF(RT_TAG_VI,
-                    "fps %.1f: game %.2f ms (gx %.2f ms, lock wait %.2f ms, %.0f draws, %.1f copies, %.1f new copy "
+                    "fps %.1f: game %.2f ms (gx %.2f ms, worker wait %.2f ms, lock wait %.2f ms, %.0f draws, %.1f copies, %.1f new copy "
                     "textures), end_frame %.2f ms, pace %.2f ms, worst frame %.1f ms, jitter %.2f ms, %d over 20 ms\n",
-                    n * 1000.0 / window, times.gameMs / n, gxNanos / 1e6 / n, lockNanos / 1e6 / n, draws / n,
+                    n * 1000.0 / window, times.gameMs / n, gxNanos / 1e6 / n, workerWait / 1e6 / n, lockNanos / 1e6 / n, draws / n,
                     copies / n, creates / n, times.endFrameMs / n, times.paceMs / n, times.worstMs,
                     std::sqrt(std::max(0.0, times.sumSq / n - (window / n) * (window / n))), times.slow);
             if (aurora_get_frame_interpolation_fps() != 0) {  // what the screen shows vs the 60 Hz game

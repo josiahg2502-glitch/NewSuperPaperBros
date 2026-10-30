@@ -60,7 +60,11 @@ void Report(const std::unordered_map<uintptr_t, uint32_t>& samples, const std::v
         }
     }
     std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) { return a.host < b.host; });
-    const auto exeBase = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    // The engine module (engine_usa.dll / engine_pal.dll since the loader split), not the small loader exe.
+    HMODULE self = nullptr;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCSTR>(&OnFramePresented), &self);
+    const auto exeBase = reinterpret_cast<uintptr_t>(self ? self : GetModuleHandleW(nullptr));
     const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(exeBase);
     const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(exeBase + dos->e_lfanew);
     const uintptr_t exeEnd = exeBase + nt->OptionalHeader.SizeOfImage;
