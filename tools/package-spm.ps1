@@ -59,6 +59,9 @@ Mirror "$root\Play\UserData\button_icons" "$engine\UserData\button_icons"
 # Credits and licenses: GPLv3 for the engine, the bundled libraries' own license files.
 Copy-Item -LiteralPath "$PSScriptRoot\CREDITS.txt" -Destination "$stage\CREDITS.txt"
 Copy-Item -LiteralPath "$root\wiicompiled\LICENSE" -Destination "$stage\LICENSE.txt"
+# Code mods: the C interface and an example (README.txt "Mods").
+New-Item -ItemType Directory -Force "$stage\mod-sdk" | Out-Null
+Copy-Item -LiteralPath "$root\wiicompiled\runtime\include\spm_mod_api.h", "$PSScriptRoot\mod-sdk\example_mod.c" -Destination "$stage\mod-sdk"
 New-Item -ItemType Directory -Force "$engine\licenses" | Out-Null
 Copy-Item -LiteralPath "$root\wiicompiled\THIRD-PARTY-NOTICES.md" -Destination "$engine\licenses"
 foreach ($dir in Get-ChildItem -LiteralPath "$root\wiicompiled\Dependencies" -Directory) {

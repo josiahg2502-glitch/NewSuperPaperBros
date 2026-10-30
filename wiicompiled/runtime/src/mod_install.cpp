@@ -20,10 +20,12 @@ namespace fs = std::filesystem;
 uint16_t Le16(const uint8_t* p) { return uint16_t(p[0] | (p[1] << 8)); }
 uint32_t Le32(const uint8_t* p) { return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24); }
 
-// The folder holding files/ or textures/: `dir` itself, or the first one found up to three levels down.
+// The folder holding files/, textures/, riivolution/ (a Riivolution pack) or code/ (native code mods): `dir` itself,
+// or the first one found up to three levels down.
 fs::path FindRoot(const fs::path& dir, int depth = 3) {
     std::error_code ec;
-    if (fs::is_directory(dir / "files", ec) || fs::is_directory(dir / "textures", ec)) return dir;
+    for (const char* sub : {"files", "textures", "riivolution", "code"})
+        if (fs::is_directory(dir / sub, ec)) return dir;
     if (depth == 0) return {};
     std::vector<fs::path> subs;
     for (const auto& entry : fs::directory_iterator(dir, ec))
@@ -158,7 +160,7 @@ void InstallDroppedZips() {
         fs::path modRoot;
         if (ExtractZip(zip, temp, error)) {
             modRoot = FindRoot(temp);
-            if (modRoot.empty()) error = "no files/ or textures/ folder inside";
+            if (modRoot.empty()) error = "no files/, textures/, riivolution/ or code/ folder inside";
         }
         if (modRoot.empty()) {
             RT_LOGF(RT_TAG_RUNTIME, "mods: %s not installed (%s)\n", RuntimeConfigFile::PathToUtf8(zip.filename()).c_str(), error.c_str());

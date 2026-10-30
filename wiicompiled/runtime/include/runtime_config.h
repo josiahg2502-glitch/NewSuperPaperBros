@@ -104,6 +104,7 @@ struct RuntimeUserConfig {
     std::optional<int32_t> fastForwardSpeed;  // [game] fast_forward_speed: 2..8 times
     std::optional<bool> fastForwardToggle;    // [game] fast_forward_toggle: a press toggles it, else hold
     std::optional<bool> fasterMenus;          // [game] faster_menus: menus, saves and loads run faster
+    std::optional<bool> saveAnywhere;         // [game] save_anywhere: Options > Game has "Save game"
     std::optional<bool> checkUpdates;         // [game] check_updates: look for a new release at start
     std::map<std::string, std::string> controllerExpressions;
     // NSMBW: [keyboard] action = "comma-separated SDL scancode names" (keybinds.h).
@@ -525,6 +526,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     }
     config.fastForwardToggle = FindConfigValue<bool>(document, "game", "fast_forward_toggle");
     config.fasterMenus = FindConfigValue<bool>(document, "game", "faster_menus");
+    config.saveAnywhere = FindConfigValue<bool>(document, "game", "save_anywhere");
     config.checkUpdates = FindConfigValue<bool>(document, "game", "check_updates");
 
     if (const auto* section = document.contains("controller") ? &document.at("controller") : nullptr;
@@ -967,6 +969,15 @@ inline bool CheckUpdates(bool fallback = true) {
 inline bool SetCheckUpdates(bool value) {
     Mutable().checkUpdates = value;
     return WriteSetting("game", "check_updates", value ? "true" : "false");
+}
+
+inline bool SaveAnywhere(bool fallback = true) {
+    return Get().saveAnywhere.value_or(fallback);
+}
+
+inline bool SetSaveAnywhere(bool value) {
+    Mutable().saveAnywhere = value;
+    return WriteSetting("game", "save_anywhere", value ? "true" : "false");
 }
 
 inline bool FasterMenus(bool fallback = true) {

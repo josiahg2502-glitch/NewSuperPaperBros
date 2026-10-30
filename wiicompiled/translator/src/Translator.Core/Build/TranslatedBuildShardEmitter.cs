@@ -636,7 +636,7 @@ public static partial class TranslatedBuildShardEmitter
             // Quoted include resolves the sibling traits header on every toolchain and keeps
             // the shard text free of the emitting machine's absolute paths.
             source.AppendLine($"#include \"{Path.GetFileName(traitsPath)}\"");
-            source.AppendLine("#define MKW_STATIC_TRANSLATED_CALL(Target, Entry, Context) do { ApplyRuntimeCallOptions(Target, Context); Entry(Context); } while (false)");
+            source.AppendLine("#define MKW_STATIC_TRANSLATED_CALL(Target, Entry, Context) do { if (!ApplyRuntimeCallOptions(Target, Context)) Entry(Context); } while (false)");
             foreach (var function in group
                          .OrderBy(static function => function.Address)
                          .ThenBy(static function => function.Symbol, StringComparer.Ordinal))

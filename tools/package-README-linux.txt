@@ -1,19 +1,28 @@
 NEW SUPER PAPER BROS. {VERSION} for Linux
 =========================================
-Start: open "New Super Paper Bros" and press PLAY. (If your file manager won't run it: right-click it > Properties >
-allow running as a program, or run  ./"New Super Paper Bros"  in a terminal.)
+Start: open "New Super Paper Bros". (If your file manager won't run it: right-click it > Properties > allow running
+as a program, or run  ./"New Super Paper Bros"  in a terminal.)
 
-First time only: on the Play page, choose your Super Paper Mario disc image (.iso / .ciso / .wbfs, USA R8PE01 or
-Europe R8PP01; the European disc also plays in French, German, Spanish and Italian: pick the language on the Play page).
-The launcher extracts it into the Disc folder here.
+First time only: put your Super Paper Mario disc image (.iso / .ciso / .wbfs, USA R8PE01 or Europe R8PP01) in this
+folder, then start the game; it sets itself up from it. You can delete the image after.
 
-Settings: the launcher's Display page (resolution, aspect, frame interpolation) and Controls page (gamepad and
-keyboard remapping). In the game, F10 opens the settings menu and F11 switches between fullscreen and a window.
+Options: press HOME (F10 on a keyboard, the Guide button on a controller) in the game. Display, sound, controls
+(keyboard and controller buttons), cheats, mods, updates, Save game and quitting are all there. F11 switches between
+fullscreen and a window.
 
-Pointer (Tippi, the HOME menu): aim with the right stick on a gamepad, or move the mouse over the game and
-click to press A. The pointer disappears two seconds after you stop aiming.
+Save anywhere: Options > Game > Save game saves to the file you are playing, right where you stand.
 
-Mods: Mods page > Open mods folder, put each mod's folder in it, click Refresh. Untick a mod to turn it off.
+Fast-forward: hold F on the keyboard, or click the right stick on a controller (Options > Game sets the speed,
+or makes it a toggle).
+
+Cheats: Options > Cheats. Gecko codes from Dolphin work too: put the game's Dolphin .ini (R8PE01.ini or R8PP01.ini)
+in the cheats folder (Options > Cheats > Open the cheats folder). Codes that run PowerPC code can't work here and say so.
+
+Mods: Options > Mods > Open the mods folder, put a mod's .zip or folder in it, and start the game again. Supported:
+replaced game files (files/), Riivolution packs (riivolution/ with its XML), texture packs (textures/) and code mods
+(code/, built with mod-sdk/spm_mod_api.h; see mod-sdk/example_mod.c).
+
+Updates: the game checks for a new version when it starts; install it from Options > Game > Update.
 
 Your saves, settings and mods live in engine/UserData. Keep this folder together; it needs nothing else.
 Needs: 64-bit Linux from 2022 or newer (glibc 2.35) with Vulkan graphics drivers.

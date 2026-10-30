@@ -199,7 +199,6 @@ PPC_NATIVE_OVERRIDE_VOID(8028c5c0, GX__SetArray_8016e1c4, (uint32_t a, uint32_t 
 
 bool SpmAuroraDlRecording();
 extern "C" void GX__SetNumTexGens_8016e5a4(uint32_t n) {
-    { static int k = 0; if (SpmAuroraDlRecording() && k++ < 6000) RT_LOGF(RT_TAG_GX, "[spmrec] texgens %u\n", n); }
     GXSetNumTexGens((u8)n);
 }
 PPC_NATIVE_OVERRIDE_VOID(8028c838, GX__SetNumTexGens_8016e5a4, (uint32_t n), (n));

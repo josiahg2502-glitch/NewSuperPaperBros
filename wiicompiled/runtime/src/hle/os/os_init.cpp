@@ -13,6 +13,7 @@
 
 #include "abi_bridge.h"
 #include "memory.h"
+#include "mod_runtime.h"
 #include "hle_stubs.h"
 #include "ppc_runtime.h"
 #include "recomp_mod_loader.h"
@@ -26,6 +27,7 @@ extern "C" void func_8055531C(CpuContext* ctx);
 
 extern "C" void OSInitAlarm_RecompModLateInit_801a961c(CpuContext* ctx) {
     func_80274664(ctx);
+    ModRuntime::ApplyEarlyPatches();  // mods' Riivolution memory patches inside the main program
 }
 
 REGISTER_NATIVE_FUNCTION_AS(0x80274664, OSInitAlarm_RecompModLateInit_801a961c, "OSInitAlarm_RecompModLateInit_801a961c");

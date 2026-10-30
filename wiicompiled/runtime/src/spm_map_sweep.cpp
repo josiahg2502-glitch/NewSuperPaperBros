@@ -4,6 +4,7 @@ extern "C" int g_spmSweepDump;
 #include "spm_map_sweep.h"
 #include "abi_bridge.h"
 #include "memory.h"
+#include "mod_runtime.h"
 #include "ppc_runtime.h"
 #include "runtime_log.h"
 
@@ -563,7 +564,28 @@ struct Sweep {
 };
 } // namespace
 
+namespace {
+std::atomic<int> g_saveStatus{0};
+std::atomic<bool> g_infiniteHp{false}, g_maxCoins{false};
+
+void SaveAndCheatsStep(CpuContext* cpu) {
+    uint32_t seq = 0;
+    if (!cpu || !Memory::TryRead32(kNowSeq, seq) || seq != 2) return;
+    if (g_saveStatus == 1 && CallGuest(cpu, 0x8023C324, 0) == 0) {                      // nandIsExec: the write is done
+        g_saveStatus = 2;
+        RT_LOGF(RT_TAG_RUNTIME, "save anywhere: saved\n");
+    }
+    if (!g_infiniteHp && !g_maxCoins) return;
+    const uint32_t pouch = CallGuest(cpu, 0x8014B594, 0);                                // pouchGetPtr
+    if (!Memory::Contains(pouch, 0x20)) return;
+    if (g_infiniteHp) Memory::Write32(pouch + 0x0C, Memory::Read32(pouch + 0x10));        // hp = max hp
+    if (g_maxCoins) Memory::Write32(pouch + 0x1C, 999);
+}
+} // namespace
+
 void Tick(CpuContext* cpu, uint32_t presentedFrames) {
+    SaveAndCheatsStep(cpu);
+    if (cpu) ModRuntime::Frame(cpu);
     // SPM_MARIO_LOG=1: Mario's position / speed / motion / buttons every 15 frames in a map (spm-headers MarioWork).
     static const bool marioLog = std::getenv("SPM_MARIO_LOG") != nullptr;
     uint32_t seq = 0;
@@ -677,6 +699,23 @@ int Seq() {
     uint32_t now = 0;
     return Memory::TryRead32(kNowSeq, now) ? int(now) : -1;
 }
+void SaveGame() {
+    g_saveStatus = 1;
+    Enqueue([](CpuContext* cpu) {
+        uint32_t gp = 0;
+        if (!Memory::TryRead32(kGp, gp) || !Memory::Contains(gp, 0xE0) || CallGuest(cpu, 0x8023C324, 0) != 0) {  // nandIsExec
+            g_saveStatus = 3;
+            return;
+        }
+        const uint32_t file = Memory::Read32(gp + 0xDC);                                     // the save file in play
+        if (file > 3) { g_saveStatus = 3; return; }
+        CallGuest(cpu, 0x8023C730, file);                                                    // nandUpdateSave
+        CallGuest(cpu, 0x8023C4CC, file);                                                    // nandWriteSave
+    });
+}
+int SaveStatus() { return g_saveStatus.load(); }
+void SetInfiniteHp(bool on) { g_infiniteHp = on; }
+void SetMaxCoins(bool on) { g_maxCoins = on; }
 bool PauseMenuOpen() {
     // pausewinWp (r13-0x75D0); its first word is the open flag (nonzero while the menu is up or animating).
     uint32_t wp = 0, flags = 0;

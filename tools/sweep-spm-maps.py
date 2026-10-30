@@ -31,7 +31,10 @@ def capture(pid, path):
         import ctypes.wintypes as w
         user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
         try:
-            user32.SetProcessDPIAware()  # else GetClientRect is DPI-scaled and the shot is a top-left crop of the window
+            # else GetClientRect is DPI-scaled and the shot is a top-left crop of the window. Per-monitor v2 like the
+            # game: system-aware alone still cropped to a third on a 4K screen at 300%.
+            if not user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+                user32.SetProcessDPIAware()
         except Exception:
             pass
         user32.GetDC.restype = w.HDC
@@ -190,7 +193,7 @@ def prepare(root, out, exe, disc):
         shutil.copytree(original / 'game_files', play / 'game_files')
     data = play / 'UserData'
     data.mkdir()
-    for name in ('Saves', 'NAND', 'mods', 'button_icons') + (('texture_replacements',) if os.environ.get('SPM_SWEEP_HDPACK') else ()):
+    for name in ('Saves', 'NAND', 'mods', 'cheats', 'button_icons') + (('texture_replacements',) if os.environ.get('SPM_SWEEP_HDPACK') else ()):
         if (original / 'UserData' / name).exists():
             shutil.copytree(original / 'UserData' / name, data / name)
     config = (original / 'UserData/Config.toml').read_text(encoding='utf-8')

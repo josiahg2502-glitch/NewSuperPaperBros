@@ -333,7 +333,6 @@ extern "C" uint32_t GX__EndDisplayList_80172eb4() {
             RegisterAuroraDisplayList(g_spmAuroraDlAddr, auroraBytes);
             static int s_dlLog = 0;
             if (s_dlLog++ < 40) RT_LOGF(RT_TAG_GX, "[spmdl] recorded list 0x%08X: %u bytes\n", g_spmAuroraDlAddr, auroraBytes);
-            { static int k = 0; if (k++ < 6000) RT_LOGF(RT_TAG_GX, "[spmrec] end id %u bytes %u\n", id, recorded); }
             if (std::getenv("SPM_DL_HEX") && id < 64) {  // diagnostic: hex of each recorded host list
                 static bool seen[64] = {};
                 if (!seen[id]) { seen[id] = true; std::string h; for (uint32_t b = 0; b < g_hostDls[id].size() && b < 1024; ++b) { char t[4]; std::snprintf(t, sizeof t, "%02x", g_hostDls[id][b]); h += t; }

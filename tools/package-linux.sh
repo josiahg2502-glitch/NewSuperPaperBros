@@ -32,6 +32,7 @@ cp -r "$root/Play/UserData/texture_replacements/SPM_HD_4x_BC3" "$engine/UserData
 cp -r "$root/Play/UserData/button_icons" "$engine/UserData/"
 cp "$root/tools/CREDITS.txt" "$stage/CREDITS.txt"
 cp "$root/wiicompiled/LICENSE" "$stage/LICENSE.txt"
+mkdir -p "$stage/mod-sdk" && cp "$root/wiicompiled/runtime/include/spm_mod_api.h" "$root/tools/mod-sdk/example_mod.c" "$stage/mod-sdk/"   # code mods (README "Mods")
 cp "$root/wiicompiled/THIRD-PARTY-NOTICES.md" "$engine/licenses/"
 for dir in "$root"/wiicompiled/Dependencies/*/; do
     for f in "$dir"LICEN[CS]E* "$dir"COPYING* "$dir"NOTICE*; do

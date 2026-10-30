@@ -65,6 +65,7 @@ extern "C" void PAD_HLE_SetRumbleEnabled(bool enabled);
 #include "spm_map_sweep.h"
 #include "updater.h"
 #include "mod_install.h"
+#include "mod_runtime.h"
 #include <SDL3/SDL_misc.h>
 #include <filesystem>
 #include <vector>
@@ -341,6 +342,11 @@ std::array<Clock::time_point, 4> g_optRepeatAt{};
 int g_ffSpeed = RuntimeConfigFile::FastForwardSpeed(3);
 bool g_ffToggleMode = RuntimeConfigFile::FastForwardToggle(false);
 bool g_fasterMenus = RuntimeConfigFile::FasterMenus(true);
+bool g_saveAnywhere = RuntimeConfigFile::SaveAnywhere(true);
+// Options > Cheats (this session only) and Options > Controls captures.
+bool g_cheatHp = false, g_cheatCoins = false;
+int g_warpGroup = 0, g_warpRoom = 0;
+int g_optPadCapture = -1;            // controller row waiting for a button, or -1
 std::atomic<bool> g_ffKeyHeld{false}, g_ffPadHeld{false}, g_ffToggled{false};
 uint32_t g_appliedSpeed = 1;
 void RequestOptionsToggle();
@@ -3082,6 +3088,53 @@ void UpdateGameSpeed() {
     g_appliedSpeed = speed;
 }
 
+// Controller rows of Options > Controls: the GameCube-style button each Wii Remote button comes from (virtual_remote.cpp
+// PadIntent turns them into the sideways remote).
+struct PadRow { const char* label; uint16_t target; };
+constexpr PadRow kPadRows[] = {
+    {"Jump (2)", PAD_BUTTON_A}, {"Pixl (1)", PAD_BUTTON_B}, {"Flip / Ability (A)", PAD_BUTTON_Y},
+    {"Pause menu (+)", PAD_BUTTON_START}, {"Minus (-)", PAD_TRIGGER_L}, {"Shake", PAD_TRIGGER_Z},
+};
+Clock::time_point g_optCaptureEnd{};
+
+std::string PadBindingLabel(uint16_t target) {
+    uint32_t count = 0;
+    const auto* maps = PADGetButtonMappings(static_cast<uint32_t>(g_controllerPort), &count);
+    for (uint32_t i = 0; maps && i < count; ++i)
+        if (maps[i].padButton == target) return NativeButtonForValue(maps[i].nativeButton).label;
+    return "Unmapped";
+}
+
+// The key or controller button being picked for a Controls row: polled every frame until it is pressed.
+void PollOptionsCapture() {
+    if (Keybinds::Capturing() >= 0 && Keybinds::PollCapture()) g_optCaptureEnd = Clock::now();
+    if (g_optPadCapture < 0) return;
+    if (!g_rebind.active) {
+        g_optPadCapture = -1;
+        g_optCaptureEnd = Clock::now();
+        return;
+    }
+    auto* pad = SDL_GetGamepadFromID(g_rebind.instance);
+    if (!pad || Clock::now() > g_rebind.deadline) {
+        g_rebind.active = false;
+        return;
+    }
+    for (int i = 0; i < SDL_GAMEPAD_BUTTON_COUNT && g_rebind.active; ++i) {
+        const bool down = SDL_GetGamepadButton(pad, static_cast<SDL_GamepadButton>(i));
+        if (down && !g_rebind.buttons[i]) CompleteRebind(static_cast<uint32_t>(i));
+        g_rebind.buttons[i] = down;
+    }
+    for (int i = 0; i < SDL_GAMEPAD_AXIS_COUNT && g_rebind.active; ++i) {
+        const int value = SDL_GetGamepadAxis(pad, static_cast<SDL_GamepadAxis>(i));
+        if (std::abs(value) < 8000) g_rebind.axesReady[i] = true;
+        if (g_rebind.axesReady[i] && std::abs(value) >= 16384) CompleteRebind(PADEncodeAxisButton(i, value < 0));
+    }
+}
+
+bool OptionsCapturing() {
+    return Keybinds::Capturing() >= 0 || g_optPadCapture >= 0 || Clock::now() - g_optCaptureEnd < std::chrono::milliseconds(400);
+}
+
 void SetOptionsOpen(bool open) {
     if (open == g_optOpen) return;
     g_optOpen = open;
@@ -3118,7 +3171,7 @@ void StepVolume(int& percent, int dir, void (*apply)(float), bool (*save)(float)
     save(percent / 100.0f);
 }
 
-constexpr const char* kOptTabs[] = {"Game", "Display", "Sound", "Controls", "Mods"};
+constexpr const char* kOptTabs[] = {"Game", "Display", "Sound", "Controls", "Cheats", "Mods"};
 constexpr int kOptTabCount = int(std::size(kOptTabs));
 
 std::vector<OptRow> OptionsRows(int tab) {
@@ -3136,6 +3189,16 @@ std::vector<OptRow> OptionsRows(int tab) {
             g_fasterMenus = !g_fasterMenus;
             RuntimeConfigFile::SetFasterMenus(g_fasterMenus);
         }, "The pause menu, room changes and file loading run at double speed."});
+        rows.push_back({"Save anywhere", OnOff(g_saveAnywhere), [](int) {
+            g_saveAnywhere = !g_saveAnywhere;
+            RuntimeConfigFile::SetSaveAnywhere(g_saveAnywhere);
+        }, "Adds Save game here, so you don't need a Save Block."});
+        if (g_saveAnywhere && SpmMapSweep::Seq() == 2) {
+            static constexpr const char* kSave[] = {"Save game", "Saving...", "Save game - saved!", "Save game - can't save right now"};
+            rows.push_back({kSave[std::clamp(SpmMapSweep::SaveStatus(), 0, 3)], "", [](int d) {
+                if (d == 0 && SpmMapSweep::SaveStatus() != 1) SpmMapSweep::SaveGame();
+            }, "Saves to the file you are playing, like a Save Block. Loading it puts you right here."});
+        }
 #if SPM_REGION_PAL
         {
             // The Wii system language the European disc reads (SC codes 1 en, 2 de, 3 fr, 4 es, 5 it).
@@ -3238,6 +3301,47 @@ std::vector<OptRow> OptionsRows(int tab) {
             RuntimeConfigFile::SetAudioMuted(g_audioMuted);
         }, "The \\ key mutes and unmutes at any time."});
     } else if (tab == 4) {
+        rows.push_back({"Infinite HP", OnOff(g_cheatHp), [](int) { SpmMapSweep::SetInfiniteHp(g_cheatHp = !g_cheatHp); },
+                        "Your HP stays full."});
+        rows.push_back({"999 coins", OnOff(g_cheatCoins), [](int) { SpmMapSweep::SetMaxCoins(g_cheatCoins = !g_cheatCoins); },
+                        "Your coins stay at 999."});
+        rows.push_back({"Unlock all characters and Pixls", "", [](int d) {
+            if (d == 0) for (int id = 217; id <= 231; ++id) SpmMapSweep::Unlock(id, id >= 220);
+        }, "Peach, Bowser, Luigi and every Pixl join you. This is saved with your game."});
+        static std::vector<const char*> groups;
+        if (groups.empty())
+            for (const auto& room : kWarpRooms)
+                if (groups.empty() || std::strcmp(groups.back(), room.group) != 0) groups.push_back(room.group);
+        std::vector<const WarpRoom*> rooms;
+        for (const auto& room : kWarpRooms)
+            if (std::strcmp(room.group, groups[static_cast<size_t>(g_warpGroup)]) == 0) rooms.push_back(&room);
+        g_warpRoom = std::clamp(g_warpRoom, 0, std::max(0, int(rooms.size()) - 1));
+        rows.push_back({"Warp: area", groups[static_cast<size_t>(g_warpGroup)], [](int d) {
+            g_warpGroup = Cycle(g_warpGroup, d == 0 ? 1 : d, int(groups.size()));
+            g_warpRoom = 0;
+        }, "Pick an area, then a room below."});
+        const WarpRoom* room = rooms.empty() ? nullptr : rooms[static_cast<size_t>(g_warpRoom)];
+        const int roomCount = int(rooms.size());
+        rows.push_back({"Warp: room", room ? room->label : "-", [room, roomCount](int d) {
+            if (d != 0) { g_warpRoom = Cycle(g_warpRoom, d, std::max(1, roomCount)); return; }
+            if (!room || SpmMapSweep::Seq() != 2) return;
+            SetOptionsOpen(false);
+            SpmMapSweep::RequestWarp(room->map, room->door, nullptr);
+        }, "Press A / 2 to go there. Story progress is not changed."});
+        // Gecko codes (Dolphin .ini files in the cheats folder or a mod): each one on or off.
+        static std::vector<ModRuntime::CheatCode> codes;
+        codes = ModRuntime::CheatCodes();
+        for (const auto& code : codes) {
+            const std::string name = code.name;
+            const bool on = code.enabled;
+            rows.push_back({"Code: " + name, code.supported ? OnOff(on) : "Can't run", [name, on](int) {
+                ModRuntime::SetCheatEnabled(name, !on);
+            }, code.note.c_str()});
+        }
+        rows.push_back({"Open the cheats folder", "", [](int d) {
+            if (d == 0) SDL_OpenURL(("file:///" + ModRuntime::CheatFolder()).c_str());
+        }, "Put Gecko codes here as a Dolphin game .ini file (R8PE01.ini); they show up after a restart."});
+    } else if (tab == 5) {
         for (const ModInstall::Mod& mod : ModInstall::List()) {
             const std::string name = mod.name;
             const bool on = mod.enabled;
@@ -3262,8 +3366,25 @@ std::vector<OptRow> OptionsRows(int tab) {
                 PADControlAllMotors(stopAll.data());
             }
         }, "Controller rumble."});
-        rows.push_back({"Shake button (Wii Remote shake)", Keybinds::KeyLabel(Keybinds::kShake), [](int) {},
-                        "On a controller, the button shown on the controls card. Keyboard keys: Developer tools."});
+        const int capturing = Keybinds::Capturing();
+        for (int action = 0; action < Keybinds::kActionCount; ++action) {
+            rows.push_back({std::string("Keyboard: ") + Keybinds::ActionName(action),
+                            capturing == action ? "Press a key..." : Keybinds::KeyLabel(action), [action](int d) {
+                if (d == 0) Keybinds::BeginCapture(action);
+            }, "Select it, then press the new key. Escape keeps the old one."});
+        }
+        rows.push_back({"Keyboard: reset to default keys", "", [](int d) { if (d == 0) Keybinds::ResetDefaults(); }, ""});
+        for (int i = 0; i < int(std::size(kPadRows)); ++i) {
+            rows.push_back({std::string("Controller: ") + kPadRows[i].label,
+                            g_optPadCapture == i ? "Press a button..." : PadBindingLabel(kPadRows[i].target), [i](int d) {
+                if (d != 0) return;
+                const int index = PADGetIndexForPort(static_cast<uint32_t>(g_controllerPort));
+                if (index < 0 || !PADGetSDLGamepadForIndex(static_cast<uint32_t>(index))) return;
+                BeginRebind(RebindKind::Controller, kPadRows[i].target, kPadRows[i].label);
+                g_rebind.openPopup = false;  // picked here, not in the developer window
+                g_optPadCapture = i;
+            }, "Press A / 2, then the controller button to use. Takes a controller that is connected."});
+        }
     }
     return rows;
 }
@@ -3286,7 +3407,9 @@ void DrawUpdateNotice() {
 }
 
 void HandleOptionsInput() {
+    PollOptionsCapture();
     const uint32_t ev = g_optEvents.exchange(0);
+    if (OptionsCapturing()) return;  // the key or button pressed belongs to the capture
     if (g_optQuitPrompt) {
         if (ev & (kOptLeft | kOptRight | kOptUp | kOptDown)) g_optQuitChoice ^= 1;
         if (ev & kOptBack) g_optQuitPrompt = false;
@@ -3365,6 +3488,12 @@ void DrawOptionsMenu() {
     Box(-hw + 20, top + 30, -hw + 230, top - 22, IM_COL32(255, 214, 64, 255), 14.0f, 5.0f);
     Txt("Options", -hw + 125, top + 4, 34.0f, 0xFFFFFFFFu, 1, 2.5f);
 
+    // Text no wider than `maxW` layout units: the size shrinks to fit.
+    auto Fit = [&](const std::string& text, float size, float maxW) {
+        if (!gameFont) return size;
+        const float w = GameLayout::MeasureText(*font, GameLayout::Utf16(text), size);
+        return w > maxW ? size * maxW / w : size;
+    };
     // Tabs.
     const float tabW = (2 * hw - 60.0f) / kOptTabCount, tabY = top - 58.0f;
     for (int i = 0; i < kOptTabCount; ++i) {
@@ -3373,15 +3502,9 @@ void DrawOptionsMenu() {
         const bool focus = sel && g_optRow < 0;
         Box(x0 + 4, tabY + 20, x0 + tabW - 4, tabY - 20, sel ? IM_COL32(254, 230, 133, 255) : IM_COL32(236, 228, 210, 255),
             12.0f, focus ? 5.0f : 3.0f, focus ? IM_COL32(220, 60, 40, 255) : IM_COL32(24, 18, 12, 255));
-        Txt(kOptTabs[i], x0 + tabW * 0.5f, tabY, 22.0f, sel ? 0x18120CFFu : 0x6A5A48FFu, 1);
+        Txt(kOptTabs[i], x0 + tabW * 0.5f, tabY, Fit(kOptTabs[i], 22.0f, tabW - 16.0f), sel ? 0x18120CFFu : 0x6A5A48FFu, 1);
     }
 
-    // Text no wider than `maxW` layout units: the size shrinks to fit.
-    auto Fit = [&](const std::string& text, float size, float maxW) {
-        if (!gameFont) return size;
-        const float w = GameLayout::MeasureText(*font, GameLayout::Utf16(text), size);
-        return w > maxW ? size * maxW / w : size;
-    };
     const std::vector<OptRow> rows = OptionsRows(g_optTab);
     const float rowH = 33.0f, rowsTop = tabY - 50.0f, rowsBottom = bottom + 76.0f;
     const int visible = std::max(1, int((rowsTop - rowsBottom) / rowH) + 1);

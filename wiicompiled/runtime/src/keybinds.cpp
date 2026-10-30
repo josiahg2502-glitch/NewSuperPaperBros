@@ -25,13 +25,13 @@ const std::array<Default, kActionCount>& Defaults() {
         {"left", "Left", {SDL_SCANCODE_LEFT}},
         {"right", "Right", {SDL_SCANCODE_RIGHT}},
         {"jump", "Jump (2)", {SDL_SCANCODE_X, SDL_SCANCODE_SPACE}},
-        {"run", "Run / Fire (1)", {SDL_SCANCODE_Z, SDL_SCANCODE_LSHIFT}},
-        {"a", "A", {SDL_SCANCODE_A}},
-        {"shake", "Shake (Spin)", {SDL_SCANCODE_C, SDL_SCANCODE_LCTRL}},
+        {"run", "Pixl (1)", {SDL_SCANCODE_Z, SDL_SCANCODE_LSHIFT}},
+        {"a", "Flip / Ability (A)", {SDL_SCANCODE_A}},
+        {"shake", "Shake", {SDL_SCANCODE_C, SDL_SCANCODE_LCTRL}},
         {"tilt_left", "Tilt Left", {SDL_SCANCODE_Q}},
         {"tilt_right", "Tilt Right", {SDL_SCANCODE_E}},
-        {"plus", "+ (Pause)", {SDL_SCANCODE_RETURN, SDL_SCANCODE_ESCAPE}},
-        {"minus", "- (Minus)", {SDL_SCANCODE_MINUS, SDL_SCANCODE_TAB}},
+        {"plus", "Pause menu (+)", {SDL_SCANCODE_RETURN, SDL_SCANCODE_ESCAPE}},
+        {"minus", "Minus (-)", {SDL_SCANCODE_MINUS, SDL_SCANCODE_TAB}},
     }};
     return defaults;
 }

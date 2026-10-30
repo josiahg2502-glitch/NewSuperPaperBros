@@ -160,9 +160,15 @@ std::vector<RuntimeRiivolution::Overlay> RiivoDiscoverRoots() {
             mods.push_back(entry.path());
         }
     }
+    for (const auto& entry : fs::directory_iterator(RuntimeConfigFile::ApplicationDataDirectory() / "mods", ec)) {
+        if (entry.is_directory(ec) && !fs::exists(entry.path() / "disabled", ec) &&
+            !fs::is_directory(entry.path() / "files", ec) && fs::is_directory(entry.path() / "riivolution", ec)) {
+            mods.push_back(entry.path());  // a Riivolution pack (SD card layout): its XML says what it replaces
+        }
+    }
     std::sort(mods.begin(), mods.end(), std::greater<>());
     for (const auto& mod : mods) {
-        RiivoAddRoot(overlays, mod / "files", "mod");
+        RiivoAddRoot(overlays, fs::is_directory(mod / "files", ec) ? mod / "files" : mod, "mod");
     }
     // Built into the game: <exe folder>/game_files mirrors the disc's files/ tree (the packaged HQ music lives
     // there). Lowest precedence, so any mod can still override it.
@@ -317,6 +323,12 @@ std::optional<RuntimeRiivolution::PatchSet> RiivoLoadPatchSet(const fs::path& ov
 
         if (config) {
             RiivolutionContract::ApplyConfigDefaults(*disc, *config);
+        } else {
+            // A pack dropped in the mods folder has no Riivolution config: turn each option on (its first choice),
+            // as picking it in the Riivolution menu would.
+            for (auto& section : disc->sections)
+                for (auto& option : section.options)
+                    if (option.selectedChoice == 0 && !option.choices.empty()) option.selectedChoice = 1;
         }
         RiivolutionContract::ApplySelections(*disc, manifestSelections);
 
@@ -326,6 +338,28 @@ std::optional<RuntimeRiivolution::PatchSet> RiivoLoadPatchSet(const fs::path& ov
         const size_t before = set.mappings.size();
         for (const auto& patch : activePatches) {
             RiivoCollectMappings(patch, sdRootGeneric, xmlDirGeneric, set);
+            for (const auto& memory : patch.memoryPatches) {
+                const auto hex = [](std::string text, std::vector<uint8_t>& out) {
+                    if (text.rfind("0x", 0) == 0 || text.rfind("0X", 0) == 0) text = text.substr(2);
+                    if (text.size() % 2) return false;
+                    for (size_t i = 0; i < text.size(); i += 2) {
+                        const int hi = std::isxdigit(static_cast<unsigned char>(text[i])) ? std::stoi(text.substr(i, 1), nullptr, 16) : -1;
+                        const int lo = std::isxdigit(static_cast<unsigned char>(text[i + 1])) ? std::stoi(text.substr(i + 1, 1), nullptr, 16) : -1;
+                        if (hi < 0 || lo < 0) return false;
+                        out.push_back(static_cast<uint8_t>(hi << 4 | lo));
+                    }
+                    return !out.empty();
+                };
+                RuntimeRiivolution::PatchSet::MemoryWrite write;
+                write.address = memory.offset;
+                if (memory.ocarina || memory.search || !hex(memory.value, write.value) ||
+                    (!memory.original.empty() && !hex(memory.original, write.original))) {
+                    RT_LOGF(RT_TAG_RIIVOLUTION, "memory patch at 0x%08X skipped (only plain value patches are supported)\n",
+                            memory.offset);
+                    continue;
+                }
+                set.memory.push_back(std::move(write));
+            }
         }
 
         // Highest-priority overlay with a <savegame> wins.

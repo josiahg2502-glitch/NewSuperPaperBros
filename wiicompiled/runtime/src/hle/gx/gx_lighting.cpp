@@ -100,8 +100,7 @@ PPC_NATIVE_OVERRIDE_VOID(8028e778, GX__SetNumChans_8017054c, (uint32_t n), (n));
 extern "C" void GX__SetChanCtrl_80170570(uint32_t ch, uint32_t en, uint32_t as, uint32_t ms, uint32_t lm, uint32_t df, uint32_t af) {
     static const bool noLight = std::getenv("SPM_NOLIGHT") != nullptr;  // diagnostic: draw unlit to test lighting as the cause of black map geometry
     if (noLight) en = 0;
-    { static int n = 0; const CpuContext* x = TryGetCpuContext();
-      if ((en | as | ms | lm) != 0 && n++ < 3000) RT_LOGF(RT_TAG_GX, "[spmchan] ctrl ch %u en %u amb %u mat %u lights %02x diff %u attn %u lr %08X\n", ch, en, as, ms, lm, df, af, x ? x->lr : 0);
+    { const CpuContext* x = TryGetCpuContext();
       // mapSetMaterial (lr 0x8008A6AC): name the material being set up, with the renderer's draw counter for matching
       if (x && x->lr == 0x8008A6ACu && ch == 0) {
           static int m = 0;

@@ -44,6 +44,7 @@
 #endif
 #include <windows.h>
 #include <dwmapi.h>
+#include <dxgi.h>
 #endif
 
 #include <aurora/aurora.h>
@@ -196,6 +197,78 @@ struct DisplayLock {
 };
 DisplayLock g_displayLock;  // under g_viMutex
 
+#if defined(_WIN32)
+// The game window's own monitor, timed by DXGI WaitForVBlank on a helper thread: its real vblank times and period.
+// DWM's timing is one clock for every display (wrong for a 240 Hz screen next to a 60 Hz one), and without a
+// phase the frames land wherever the clock started, sometimes right on a vblank edge, where they slip back and forth.
+struct VBlankClock {
+    std::atomic<int64_t> lastNs{0};    // steady-clock time of the latest vblank
+    std::atomic<int64_t> periodNs{0};  // averaged period
+    std::atomic<HMONITOR> monitor{nullptr};
+    std::once_flag started;
+};
+VBlankClock g_vblankClock;
+
+void VBlankThread() {
+    using CreateFactoryFn = HRESULT(WINAPI*)(REFIID, void**);
+    HMODULE dxgi = ::LoadLibraryW(L"dxgi.dll");
+    const auto create = dxgi ? reinterpret_cast<CreateFactoryFn>(reinterpret_cast<void*>(::GetProcAddress(dxgi, "CreateDXGIFactory1")))
+                             : nullptr;
+    if (!create) return;
+    static const GUID kIidFactory1 = {0x770aae78, 0xf26f, 0x4dba, {0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87}};
+    IDXGIFactory1* factory = nullptr;
+    if (FAILED(create(kIidFactory1, reinterpret_cast<void**>(&factory))) || !factory) return;
+    IDXGIOutput* output = nullptr;
+    HMONITOR outputMonitor = nullptr;
+    int64_t previous = 0;
+    double average = 0.0;
+    for (;;) {
+        const HMONITOR want = g_vblankClock.monitor.load();
+        if (want != outputMonitor) {  // the window moved to another monitor: find its output
+            if (output) output->Release();
+            output = nullptr;
+            outputMonitor = want;
+            previous = 0;
+            average = 0.0;
+            g_vblankClock.periodNs = 0;
+            IDXGIAdapter1* adapter = nullptr;
+            for (UINT a = 0; !output && factory->EnumAdapters1(a, &adapter) != DXGI_ERROR_NOT_FOUND; ++a) {
+                IDXGIOutput* candidate = nullptr;
+                for (UINT o = 0; !output && adapter->EnumOutputs(o, &candidate) != DXGI_ERROR_NOT_FOUND; ++o) {
+                    DXGI_OUTPUT_DESC desc{};
+                    if (SUCCEEDED(candidate->GetDesc(&desc)) && desc.Monitor == want) output = candidate;
+                    else candidate->Release();
+                }
+                adapter->Release();
+            }
+        }
+        if (!output || FAILED(output->WaitForVBlank())) {
+            std::this_thread::sleep_for(250ms);
+            continue;
+        }
+        const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count();
+        if (previous != 0) {
+            const int64_t delta = now - previous;
+            if (delta > 2'000'000 && delta < 50'000'000) {  // a missed wakeup spans two periods: skipped
+                const bool settled = average > 0.0 && std::fabs(delta - average) < average * 0.25;
+                if (average <= 0.0) average = static_cast<double>(delta);
+                else if (settled) average += (delta - average) / 64.0;
+                static int unsettled = 0, samples = 0;
+                unsettled = settled ? 0 : unsettled + 1;
+                if (unsettled >= 8) {  // the first sample was an outlier, or the refresh rate changed
+                    average = static_cast<double>(delta);
+                    unsettled = samples = 0;
+                    g_vblankClock.periodNs = 0;
+                }
+                if (settled && ++samples >= 32) g_vblankClock.periodNs = static_cast<int64_t>(average);
+            }
+        }
+        previous = now;
+        g_vblankClock.lastNs = now;
+    }
+}
+#endif
+
 void RefreshDisplayLockLocked(Clock::time_point now) {
     DisplayLock& d = g_displayLock;
     if (!settings_overlay::VSync()) {
@@ -226,16 +299,28 @@ void RefreshDisplayLockLocked(Clock::time_point now) {
     double modeHz = 0.0;
     int windowCount = 0;
     if (SDL_Window** windows = SDL_GetWindows(&windowCount)) {
-        if (windowCount > 0)
+        if (windowCount > 0) {
             if (const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(windows[0])))
                 modeHz = mode->refresh_rate;
+            if (auto* hwnd = static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(windows[0]),
+                                                                      SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr))) {
+                g_vblankClock.monitor = ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                std::call_once(g_vblankClock.started, [] { std::thread(VBlankThread).detach(); });
+            }
+        }
         SDL_free(windows);
     }
     const auto steadyNow = Clock::now();
     const double nsPerTick = dwmOk ? 1e9 / static_cast<double>(frequency.QuadPart) : 0.0;
     const double dwmHz = dwmOk ? 1e9 / (info.qpcRefreshPeriod * nsPerTick) : 0.0;
     d.phaseKnown = dwmOk && (modeHz <= 1.0 || std::fabs(dwmHz - modeHz) < modeHz * 0.02);
-    const double hz = d.phaseKnown ? dwmHz : modeHz;
+    double hz = d.phaseKnown ? dwmHz : modeHz;
+    // The window's own monitor, measured: preferred over DWM whenever it agrees with the display mode.
+    const int64_t vblankPeriod = g_vblankClock.periodNs.load(), vblankLast = g_vblankClock.lastNs.load();
+    const int64_t steadyNs = std::chrono::duration_cast<std::chrono::nanoseconds>(steadyNow.time_since_epoch()).count();
+    const bool measured = vblankPeriod > 0 && steadyNs - vblankLast < 200'000'000 &&
+                          (modeHz <= 1.0 || std::fabs(1e9 / vblankPeriod - modeHz) < modeHz * 0.02);
+    if (measured) hz = 1e9 / static_cast<double>(vblankPeriod);
     if (hz <= 1.0) {
         if (!d.logged) {
             d.logged = true;
@@ -250,9 +335,19 @@ void RefreshDisplayLockLocked(Clock::time_point now) {
     d.valid = k >= 1 && k <= 8 && std::fabs(hz / k - 60.0) < 60.0 * 0.02;
     d.k = k;
     d.period = period;
-    if (d.phaseKnown)
+    if (measured) {
+        d.phaseKnown = true;
+        d.vblank = Clock::time_point(std::chrono::nanoseconds(vblankLast));
+    } else if (d.phaseKnown) {
         d.vblank = steadyNow - std::chrono::nanoseconds(static_cast<int64_t>(
                                    static_cast<double>(qpcNow.QuadPart - static_cast<LONGLONG>(info.qpcVBlank)) * nsPerTick));
+    }
+    static bool loggedMeasured = false;
+    if (measured && !loggedMeasured) {
+        loggedMeasured = true;
+        RT_LOGF(RT_TAG_VI, "V-Sync: the window's monitor measures %.3f Hz; frames are timed to its vblanks (%d per frame)\n",
+                hz, k);
+    }
     if (!d.logged) {
         d.logged = true;
         RT_LOGF(RT_TAG_VI, "V-Sync: display %.3f Hz (DWM %.3f Hz, mode %.3f Hz%s), %s\n", hz, dwmHz, modeHz,
@@ -274,9 +369,11 @@ std::chrono::nanoseconds LockedIntervalAfter(Clock::time_point retrace) {
     const int64_t period = d.period.count();
     if (!d.phaseKnown) return std::chrono::nanoseconds(period * d.k);  // the rate alone, no phase pull
     // Presents go out about 6.5 ms after their retrace (aurora's kNativePresentOffsetNanos): put that
-    // moment halfway between two vblanks, the most room either way.
-    constexpr int64_t kPresentOffset = 6'500'000;
-    int64_t target = (period / 2 - kPresentOffset) % period;
+    // moment halfway between two vblanks, the most room either way. Above 60 FPS the inserted frames go out
+    // on the retrace itself and every display period after it, so the retrace goes halfway instead: with the
+    // 6.5 ms offset they landed 0.25 ms before a 240 Hz vblank and slipped to the next one now and then.
+    const int64_t presentOffset = aurora_get_frame_interpolation_fps() > 60 ? 0 : 6'500'000;
+    int64_t target = (period / 2 - presentOffset) % period;
     if (target < 0) target += period;
     int64_t phase = (std::chrono::duration_cast<std::chrono::nanoseconds>(retrace - d.vblank).count()) % period;
     if (phase < 0) phase += period;
@@ -979,7 +1076,9 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         // cadence, and zero only happens when production outruns VI. "Kept up" means <=1 retrace
         // elapsed; 2+ means a boundary was missed, so Aurora seals that frame without its interpolated
         // slots (a windowed backstop lowers the slot target only under sustained overload).
-        aurora_report_producer_paced(retracesElapsed <= 1);
+        // Room changes and file loads always overrun; counting them took the inserted frames away after every door.
+        const int seq = SpmMapSweep::Seq();
+        aurora_report_producer_paced(retracesElapsed <= 1 || seq == 3 || seq == 5);
         // Stamp the sealed frame's presentation schedule so Aurora paces interpolated slots against
         // this same VI timeline. Anchor to the NEXT retrace boundary, not the period just produced,
         // since slots anchored to the current period would already be expired by seal time. Encoding

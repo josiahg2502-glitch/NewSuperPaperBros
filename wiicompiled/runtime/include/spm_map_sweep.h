@@ -21,6 +21,13 @@ void SetGamePaused(bool paused);
 int Seq();
 // Pause menu (pausewin) open, for faster menus.
 bool PauseMenuOpen();
+// Options > Save game: what a save block does (nandUpdateSave + nandWriteSave on the file in play), so loading the
+// file puts Mario where he stood. Status: 0 idle, 1 writing, 2 saved, 3 could not save here.
+void SaveGame();
+int SaveStatus();
+// Options > Cheats, applied on every game frame in a map.
+void SetInfiniteHp(bool on);
+void SetMaxCoins(bool on);
 void RemoveCharOrPixl(int itemId);   // character / Pixl slot; not the character played or the Pixl in use
 void Unlock(int itemId, bool pixl);   // add the character / Pixl item, then make it selectable
 void AddCoins(int amount);

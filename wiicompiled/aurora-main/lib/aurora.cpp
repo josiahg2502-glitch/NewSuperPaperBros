@@ -1041,6 +1041,25 @@ bool present_presentation_job(const PresentationJob& job) {
               PresentClock::now() - presentStarted);
           if (presentStatus == wgpu::Status::Success) {
             presented = true;
+            // AURORA_PRESENT_LOG=1: the spacing of Present() calls, every 240 presents (pacing checks).
+            static const bool logCadence = std::getenv("AURORA_PRESENT_LOG") != nullptr;
+            if (logCadence) {
+              static PresentClock::time_point s_last{};
+              static std::vector<double> s_gaps;
+              if (s_last != PresentClock::time_point{})
+                s_gaps.push_back(std::chrono::duration<double, std::milli>(presentStarted - s_last).count());
+              s_last = presentStarted;
+              if (s_gaps.size() >= 240) {
+                double sum = 0, sq = 0, lo = 1e9, hi = 0;
+                for (const double g : s_gaps) { sum += g; sq += g * g; lo = (std::min)(lo, g); hi = (std::max)(hi, g); }
+                const double mean = sum / s_gaps.size();
+                int off = 0;
+                for (const double g : s_gaps) off += std::fabs(g - mean) > mean * 0.25;
+                Log.info("Present cadence: mean {:.3f} ms, sd {:.3f}, min {:.3f}, max {:.3f}, {} of {} off by >25%", mean,
+                         std::sqrt((std::max)(0.0, sq / s_gaps.size() - mean * mean)), lo, hi, off, s_gaps.size());
+                s_gaps.clear();
+              }
+            }
             record_successful_present(
                 job.interpolated, job.logicalFrame, acquireDuration, encodeDuration,
                 finishDuration, submitDuration, presentDuration,
@@ -1153,6 +1172,14 @@ void presenter_main() noexcept {
       // V-Sync only, never for an inserted (interpolated) slot: drop this frame when the swapchain
       // is backed up, or when it is already late and a newer one waits. A slow scene with no
       // backlog presents every frame, late or not.
+      // An inserted frame is dropped when a newer one is already due: shown anyway, the two go out back to back.
+      static const bool oldPacing = std::getenv("AURORA_OLD_SLOT_PACING") != nullptr;
+      if (!oldPacing && job.interpolated && !g_presenter.jobs.empty() && g_presenter.jobs.front().presentAt != PresentClock::time_point{} &&
+          g_presenter.jobs.front().presentAt <= PresentClock::now()) {
+        lock.unlock();
+        g_presenter.cv.notify_all();
+        continue;
+      }
       if (webgpu::vsync_enabled() && !job.interpolated && job.presentAt != PresentClock::time_point{}) {
         constexpr auto kBacklog = std::chrono::milliseconds(8);
         const bool backedUp = g_lastAcquireNanos.exchange(0, std::memory_order_relaxed) >
@@ -1653,9 +1680,19 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
     }
   };
 
+  // An inserted frame whose moment has already passed (a game frame that ran late) is skipped: shown late it
+  // would burst out next to its neighbours, and holding the whole group back a frame for it was a visible hitch.
+  static const bool oldPacing = std::getenv("AURORA_OLD_SLOT_PACING") != nullptr;  // A/B tests of the change
+  const auto slotExpired = [&](uint32_t slot) {
+    const auto deadline = slotPresentDeadline(slot);
+    if (oldPacing || !ctx.interpolationActive || deadline == PresentClock::time_point{}) return false;
+    const std::chrono::nanoseconds halfSlot{static_cast<int64_t>(ctx.scheduleIntervalNanos / presentationJobCount / 2)};
+    return PresentClock::now() > deadline + halfSlot;
+  };
   if (ctx.replayInterpolatedFrames) {
     for (uint32_t interpolatedFrame = 0; interpolatedFrame < ctx.interpolatedFrameCount;
          ++interpolatedFrame) {
+      if (slotExpired(interpolatedFrame)) continue;
       gfx::render(sealedFrame, encoder, static_cast<int32_t>(interpolatedFrame), false);
       auto image =
           acquire_presentation_image(interpolatedFrame, ctx.snapshotWidth, ctx.snapshotHeight);
@@ -1681,6 +1718,7 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
   if (!ctx.replayInterpolatedFrames) {
     for (uint32_t interpolatedFrame = 0; interpolatedFrame < ctx.interpolatedFrameCount;
          ++interpolatedFrame) {
+      if (slotExpired(interpolatedFrame)) continue;
       auto image =
           acquire_presentation_image(interpolatedFrame, ctx.snapshotWidth, ctx.snapshotHeight);
       const auto newMetalFXOutput = encode_presentation_snapshot(
@@ -1713,25 +1751,25 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
   });
   submitEncodedSlot(encoder);
 
-  // A group that finished encoding past its anchor slides forward by whole display periods, never
-  // per slot. The cursor keeps two groups off one anchor, which bursts then holds for a period.
+  // Late slots were skipped above and the frame itself presents as soon as it can, on the VI grid (no slide
+  // by a whole frame, which held the picture and added a frame of latency that never went away). The cursor
+  // keeps two groups off one anchor, which bursts then holds for a period.
   static PresentClock::time_point s_lastGroupAnchor{};
   if (ctx.interpolationActive && ctx.scheduleIntervalNanos != 0 && !presentationJobs.empty() &&
       presentationJobs.front().presentAt != PresentClock::time_point{}) {
     const std::chrono::nanoseconds interval{static_cast<int64_t>(ctx.scheduleIntervalNanos)};
-    auto anchor = presentationJobs.front().presentAt;
-    const auto now = PresentClock::now();
-    if (now > anchor) {
-      const auto behind = std::chrono::duration_cast<std::chrono::nanoseconds>(now - anchor);
+    auto anchor = slotPresentDeadline(0);
+    if (const auto now = PresentClock::now(); oldPacing && now > anchor) {
       const uint64_t periods =
-          static_cast<uint64_t>(behind.count()) / ctx.scheduleIntervalNanos + 1u;
+          static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now - anchor).count()) /
+              ctx.scheduleIntervalNanos + 1u;
       anchor += std::chrono::nanoseconds{static_cast<int64_t>(periods * ctx.scheduleIntervalNanos)};
     }
     if (s_lastGroupAnchor != PresentClock::time_point{} && anchor <= s_lastGroupAnchor) {
       anchor = s_lastGroupAnchor + interval;
     }
     const auto shift =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(anchor - presentationJobs.front().presentAt);
+        std::chrono::duration_cast<std::chrono::nanoseconds>(anchor - slotPresentDeadline(0));
     if (shift.count() > 0) {
       const uint32_t slidPeriods = static_cast<uint32_t>(
           (static_cast<uint64_t>(shift.count()) + ctx.scheduleIntervalNanos - 1u) /

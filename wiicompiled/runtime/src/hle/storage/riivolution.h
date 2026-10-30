@@ -34,6 +34,12 @@ struct PatchSet {
     // a later mapping for the same disc path wins.
     std::vector<Mapping> mappings;
     uint32_t skippedExternals = 0; // externals that do not exist on the host
+    // <memory> patches with an inline value (applied by mod_runtime.cpp); `original`, when given, must match first.
+    struct MemoryWrite {
+        uint32_t address = 0;
+        std::vector<uint8_t> value, original;
+    };
+    std::vector<MemoryWrite> memory;
 };
 
 struct Overlay {

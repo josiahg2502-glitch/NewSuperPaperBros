@@ -66,6 +66,7 @@
 #include "frame_input.h"
 #include "det_clock.h"
 #include "game_folder.h"
+#include "mod_runtime.h"
 #include "mod_install.h"
 #include "disc_image.h"
 #include "abi_bridge.h"
@@ -1413,6 +1414,9 @@ int RuntimeMain(int argc, char** argv) {
         if (const char* selftest = std::getenv("SPM_SELFTEST"); selftest && *selftest == '1') {
             bool ok = ModInstall::SelfCheck();
             RT_LOGF(RT_TAG_RUNTIME, "selftest: mod install %s\n", ok ? "ok" : "FAILED");
+            const bool gecko = ModRuntime::SelfCheck();
+            RT_LOGF(RT_TAG_RUNTIME, "selftest: gecko codes %s\n", gecko ? "ok" : "FAILED");
+            ok = ok && gecko;
             if (const char* image = std::getenv("SPM_SELFTEST_IMAGE")) {  // a disc image: what the first-run setup sees
                 DiscImage::Info info;
                 std::string error;
@@ -1430,6 +1434,7 @@ int RuntimeMain(int argc, char** argv) {
             return 0;
         }
         ModInstall::InstallDroppedZips();
+        ModRuntime::Load();
 #if defined(__ANDROID__)
         // Determinism testing on a phone: debug.nsmbw.det=1 turns the lockstep timing on,
         // debug.nsmbw.dethash / detdump set NSMBW_DET_HASH / NSMBW_DET_DUMP (det_hash.h) and

@@ -273,8 +273,15 @@ std::atomic_bool s_dropInterpolationAtSeal{false};
 std::atomic_uint32_t s_pacingWindowFrames{0};
 std::atomic_uint32_t s_pacingWindowMisses{0};
 constexpr uint32_t kPacingWindowFrames = 60; // ~1 second of guest frames
-constexpr uint32_t kPacingReducePercent = 75;
-constexpr uint32_t kPacingRestorePercent = 25;
+// New Super Paper Bros.: a game held at 45 FPS by its inserted frames misses only about a third of its retraces,
+// which the old 75% never reached (slots stayed at 3 while the game slowed). Reduce at 20% late (a game that
+// keeps up still misses a few percent); restore only after several clean seconds, since fewer slots is what
+// made those seconds clean.
+constexpr uint32_t kPacingReducePercent = 20;
+constexpr uint32_t kPacingRestorePercent = 2;
+constexpr uint32_t kPacingRestoreWindows = 5;
+std::atomic_uint32_t s_pacingCleanWindows{0};
+std::atomic_uint32_t s_pacingRestoreNeeded{kPacingRestoreWindows};  // doubles per reduction: no flapping
 
 uint32_t maximum_interpolation_samples() noexcept {
   const uint32_t targetFps = frame_interpolation_fps();
@@ -773,16 +780,22 @@ void report_producer_paced(bool paced) noexcept {
   // one decision per window this cannot spam the log or flap within a second.
   uint32_t target =
       std::min(s_interpolationSampleTarget.load(std::memory_order_acquire), maximumSamples);
+  const bool clean = misses * 100u <= frames * kPacingRestorePercent;
+  const uint32_t cleanWindows = clean ? s_pacingCleanWindows.load(std::memory_order_acquire) + 1 : 0;
+  s_pacingCleanWindows.store(cleanWindows, std::memory_order_release);
   if (misses * 100u >= frames * kPacingReducePercent) {
     if (target > 0) {
       --target;
+      s_pacingRestoreNeeded.store(std::min(s_pacingRestoreNeeded.load(std::memory_order_acquire) * 2, 64u),
+                                  std::memory_order_release);
       s_diagSlotReductions.fetch_add(1, std::memory_order_relaxed);
       Log.info("interpolation slots reduced to {}: {}/{} frames overran their retrace budget",
                target, misses, frames);
     }
-  } else if (misses * 100u <= frames * kPacingRestorePercent) {
+  } else if (clean && cleanWindows >= s_pacingRestoreNeeded.load(std::memory_order_acquire)) {
     if (target < maximumSamples) {
       ++target;
+      s_pacingCleanWindows.store(0, std::memory_order_release);
       Log.info("interpolation slots restored to {}: {}/{} frames overran their retrace budget",
                target, misses, frames);
     }

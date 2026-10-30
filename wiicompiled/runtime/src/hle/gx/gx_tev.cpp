@@ -43,7 +43,6 @@ PPC_NATIVE_OVERRIDE_VOID(8028fe58, GX__SetTevOp_80171c4c, (uint32_t s, uint32_t 
 
 bool SpmAuroraDlRecording();
 extern "C" void GX__SetTevOrder_8017214c(uint32_t s, uint32_t c, uint32_t m, uint32_t col) {
-    { static int n = 0; if (SpmAuroraDlRecording() && n++ < 6000) RT_LOGF(RT_TAG_GX, "[spmrec] tevorder st %u coord %u map %u chan %u\n", s, c, m, col); }
     if (!TevStageOk(s)) return;
     GXSetTevOrder((GXTevStageID)s, (GXTexCoordID)c, (GXTexMapID)m, (GXChannelID)col);
 }

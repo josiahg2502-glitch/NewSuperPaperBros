@@ -27,17 +27,21 @@ inline void InvokeIndirectCpu(uint32_t target, CpuContext* ctx);
 // static calls deliberately bypass InvokeDirectCpu for performance.
 // (used for the path mask filtering in ScnRenderer::createPath: depth of
 // field is always removed, bloom when the user disabled it)
-inline void ApplyRuntimeCallOptions(uint32_t target, CpuContext* ctx) {
+// It is also where code mods hook game functions (mod_runtime.h): true when a mod replaced the call.
+namespace ModHooks {
+extern bool g_active;
+bool Run(uint32_t target, CpuContext* ctx);
+}
+inline bool ApplyRuntimeCallOptions(uint32_t target, CpuContext* ctx) {
+    if (ModHooks::g_active && ModHooks::Run(target, ctx)) return true;
 #if 0  // NSMBW: MKW-only. 0x8023BD38 was Mario Kart's ScnRenderer::createPath; in NSMBW that
        // address is an unrelated function, so rewriting its r4 would corrupt it.
     if (target == 0x8023BD38u) {
         // ScnRenderer::createPath receives the post-processing path mask in r4.
         ctx->gpr[4] = RuntimeGameGraphicsOptions::FilterScnRendererPathMask(ctx->gpr[4]);
     }
-#else
-    (void)target;
-    (void)ctx;
 #endif
+    return false;
 }
 
 // Persistent per-thread CPU context used across translated function calls.
@@ -552,7 +556,7 @@ template <uint32_t Target>
 inline void InvokeDirectCpu(CpuContext* ctx) {
     static_assert(Target != 0, "InvokeDirectCpu cannot target address 0");
     CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
-    ApplyRuntimeCallOptions(Target, cpu);
+    if (ApplyRuntimeCallOptions(Target, cpu)) return;
     if constexpr (KnownNativeCpuCall<Target>::kAvailable) {
         const auto invokeKnownNative = [&]() {
             PpcNonvolatileGprGuard gprGuard(cpu);
@@ -650,7 +654,7 @@ inline void InvokeIndirectCpu(uint32_t target, CpuContext* ctx) {
     if (target == 0) {
         ReportMissingCpuTarget(target, cpu);
     }
-    ApplyRuntimeCallOptions(target, cpu);
+    if (ApplyRuntimeCallOptions(target, cpu)) return;
     if (TryDispatchRawCpuTarget(TranslatedFunctionRegistry::FindRawByAddressPtr(target), cpu)) {
         return;
     }
