@@ -3303,6 +3303,17 @@ std::vector<OptRow> OptionsRows(int tab) {
                         "Your HP stays full."});
         rows.push_back({"999 coins", OnOff(g_cheatCoins), [](int) { SpmMapSweep::SetMaxCoins(g_cheatCoins = !g_cheatCoins); },
                         "Your coins stay at 999."});
+        {
+            // Cycle anywhere: each press switches to the next character at once, even where the game's own
+            // character menu is off (one not met yet joins first).
+            static constexpr const char* kChars[] = {"Mario", "Peach", "Bowser", "Luigi"};
+            SpmMapSweep::RequestState();
+            SpmMapSweep::DebugState st;
+            const int current = SpmMapSweep::GetState(st) && st.curChar >= 216 && st.curChar <= 219 ? st.curChar - 216 : 0;
+            rows.push_back({"Character", kChars[current], [current](int d) {
+                SpmMapSweep::SwitchCharacter(Cycle(current, d == 0 ? 1 : d, 4));
+            }, "Left / right switches character right away, anywhere."});
+        }
         static bool s_flip = false, s_tokens = false;
         rows.push_back({"Infinite 3D time", OnOff(s_flip), [](int) { SpmMapSweep::SetInfiniteFlip(s_flip = !s_flip); },
                         "Mario can stay flipped into 3D as long as he likes."});

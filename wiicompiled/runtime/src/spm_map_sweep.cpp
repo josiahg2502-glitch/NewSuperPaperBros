@@ -616,6 +616,10 @@ void CheatSelfTest(CpuContext* cpu) {
         for (int id = 217; id <= 231; ++id) Unlock(id, id >= 220);
     } else if (frames == 240) {
         stats("after");
+        SwitchCharacter(2);  // Bowser
+    } else if (frames == 360) {
+        const uint32_t mw = CallGuest(cpu, 0x801214EC, 0);
+        RT_LOGF(RT_TAG_RUNTIME, "cheat test: character now %d (2 = Bowser)\n", int8_t(Memory::Read8(mw + 0x38)));
     }
 }
 
@@ -766,6 +770,18 @@ void AddMaxHp(int amount) {
         const int maxHp = int(CallGuest(cpu, 0x8014C9F4, 0)) + amount;                       // pouchGetMaxHp
         CallGuest(cpu, 0x8014C9C0, uint32_t(maxHp));                                         // pouchSetMaxHp
         CallGuest(cpu, 0x8014C920, uint32_t(maxHp));                                         // pouchSetHp: refilled too
+    });
+}
+void SwitchCharacter(int index) {
+    Enqueue([=](CpuContext* cpu) {
+        const uint32_t mw = CallGuest(cpu, 0x801214EC, 0);                                      // marioGetPtr
+        if (!Memory::Contains(mw, 0x40) || int8_t(Memory::Read8(mw + 0x38)) == index) return;
+        if (!CallGuest(cpu, 0x8014D100, uint32_t(216 + index))) {                                // pouchCheckHaveItem
+            CallGuest(cpu, 0x8014CB04, uint32_t(216 + index));                                   // pouchAddItem: not met yet
+            CallGuest(cpu, 0x8014E4BC, uint32_t(216 + index));                                   // pouchMakeCharSelectable
+        }
+        CallGuest(cpu, 0x80146A7C, uint32_t(index));        // marioChangeCharacter, as the character menu does
+        RT_LOGF(RT_TAG_RUNTIME, "cheat: switched to character %d (now %d)\n", index, int8_t(Memory::Read8(mw + 0x38)));
     });
 }
 void AddItemRange(int first, int last) {
