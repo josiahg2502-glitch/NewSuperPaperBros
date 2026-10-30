@@ -616,6 +616,14 @@ sealed class MainForm : Form
         }
     }
 
+    // "--play" (tests): what PLAY does, without the window or message boxes. 0 = game started, 3 = no disc, 4 = no engine.
+    public int PlayHeadless()
+    {
+        if (!DiscStatus().Item1) return 3;
+        if (!File.Exists(gameExe)) return 4;
+        return Process.Start(new ProcessStartInfo(gameExe) { WorkingDirectory = play, UseShellExecute = false }) != null ? 0 : 5;
+    }
+
     void Launch()
     {
         var (ok, text, _) = DiscStatus();

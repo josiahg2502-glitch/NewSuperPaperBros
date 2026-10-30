@@ -51,6 +51,7 @@ static class Program
             return back.Count == files.Count && files.All(f => back.TryGetValue(f.Key!, out var b) && b.AsSpan().SequenceEqual(f.Value)) ? 0 : 1;
         }
         ApplicationConfiguration.Initialize();
+        if (args.Contains("--play")) using (var form = new MainForm(selfTest: false, screenshotDir: null)) return form.PlayHeadless();  // tests
         // "--screenshot <dir>" draws every page to <dir>\<page>.png and exits (visual check without the desktop).
         int shot = Array.IndexOf(args, "--screenshot");
         Application.Run(new MainForm(selfTest: args.Contains("--selftest"), screenshotDir: shot >= 0 && shot + 1 < args.Length ? args[shot + 1] : null));
