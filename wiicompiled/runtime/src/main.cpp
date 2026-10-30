@@ -67,6 +67,7 @@
 #include "det_clock.h"
 #include "game_folder.h"
 #include "mod_install.h"
+#include "disc_image.h"
 #include "abi_bridge.h"
 #include "guest_flat_memory.h"
 #include "gx_guest_write.h"
@@ -1410,8 +1411,14 @@ int RuntimeMain(int argc, char** argv) {
             RT_LOGF(RT_TAG_RUNTIME, "fast cores %s\n", line.c_str());
 #endif
         if (const char* selftest = std::getenv("SPM_SELFTEST"); selftest && *selftest == '1') {
-            const bool ok = ModInstall::SelfCheck();
+            bool ok = ModInstall::SelfCheck();
             RT_LOGF(RT_TAG_RUNTIME, "selftest: mod install %s\n", ok ? "ok" : "FAILED");
+            if (const char* image = std::getenv("SPM_SELFTEST_IMAGE")) {  // a disc image: what the first-run setup sees
+                DiscImage::Info info;
+                std::string error;
+                const bool usable = DiscImage::Probe(RuntimeConfigFile::PathFromUtf8(image), info, error);
+                RT_LOGF(RT_TAG_RUNTIME, "selftest: image %s: %s\n", image, usable ? (info.id + " rev " + std::to_string(info.revision)).c_str() : error.c_str());
+            }
             SetRuntimeExitCodeImpl(ok ? 0 : 7);
             ShutdownProcessTranscript();
             return ok ? 0 : 7;
