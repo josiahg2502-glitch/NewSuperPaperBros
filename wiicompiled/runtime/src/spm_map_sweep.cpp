@@ -623,7 +623,24 @@ void CheatSelfTest(CpuContext* cpu) {
     }
 }
 
+// SPM_TEST_ASSERT57=1: raise extdrv.c:364 (issue #57) with the game's own strings; the game must carry on.
+void Assert57SelfTest(CpuContext* cpu) {
+    static const bool on = std::getenv("SPM_TEST_ASSERT57") != nullptr;
+    static uint32_t frames = 0;
+    uint32_t seq = 0;
+    if (!on || !cpu || !Memory::TryRead32(kNowSeq, seq) || seq != 2 || ++frames != 120) return;
+    CpuContext call = *cpu;
+    const uint32_t strings = 0x80320000u + 21408u;  // extMakeTexture's string block
+    call.gpr[3] = strings + 44;
+    call.gpr[4] = 364;
+    call.gpr[5] = strings + 157;
+    call.gpr[6] = strings + 187;
+    InvokeIndirectCpu(0x8019B6C8u, &call);  // __assert2
+    RT_LOGF(RT_TAG_RUNTIME, "assert57 test: the game carried on\n");
+}
+
 void Tick(CpuContext* cpu, uint32_t presentedFrames) {
+    Assert57SelfTest(cpu);
     CheatSelfTest(cpu);
     SaveAndCheatsStep(cpu);
     if (cpu) ModRuntime::Frame(cpu);

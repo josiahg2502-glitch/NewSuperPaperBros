@@ -451,6 +451,28 @@ namespace ModRuntime {
 
 void Load() {
     AddDolTextRanges();
+    // Built in (issue #57): extdrv.c:364 `anim_ext_tex_size < 1024*1024` panicked at King Sammer's "Vassals to me!"
+    // in 6-1. The frame's animation textures are frame-buffer copies the recomp keeps on the GPU, not in that
+    // 1 MB of game memory, so going past it is harmless here: that one assert continues instead of crashing.
+    g_loading = true;
+    const int hooked = ApiHook(0x8019B6C8u, [](SpmCpu* cpu, void*) -> int {  // __assert2(file, line, expression, message)
+        const uint32_t* r = Ctx(cpu)->gpr;
+        if (r[4] != 364) return 0;
+        bool match = false;
+        for (const uint32_t at : {r[5], r[6]}) {  // the expression, then the message
+            char text[48] = {};
+            for (uint32_t i = 0; i + 1 < sizeof text && Memory::Contains(at + i, 1); ++i)
+                if (!(text[i] = char(Memory::Read8(at + i)))) break;
+            match |= std::strstr(text, "anim_ext_tex_size") != nullptr;
+        }
+        if (!match) return 0;
+        static bool logged = false;
+        if (!logged) RT_LOGF(RT_TAG_RUNTIME, "extdrv.c:364 anim_ext_tex_size over 1 MB: continuing (issue #57)\n");
+        logged = true;
+        return 1;
+    }, nullptr);
+    g_loading = false;
+    if (!hooked) RT_LOGF(RT_TAG_RUNTIME, "issue #57 guard: __assert2 not hookable\n");
     LoadCodeMods();
     LoadCheats();
 }
