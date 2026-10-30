@@ -293,6 +293,7 @@ bool ReadSample(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
         return false;
     }
     NetplayUi::FilterGameInput(chan, sample);
+    settings_overlay::FilterMenuInput(chan, sample);
     // The startup cover (settings_overlay) waits for A or 2; the press itself never reaches the game.
     constexpr uint32_t kWpadA = 0x0800u, kWpadTwo = 0x0100u;
     if (settings_overlay::StartupScreenVisible() && (sample.hold & (kWpadA | kWpadTwo)) != 0) {

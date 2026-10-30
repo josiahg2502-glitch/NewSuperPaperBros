@@ -101,6 +101,10 @@ struct RuntimeUserConfig {
     std::array<std::optional<std::string>, 12> controllerButtons;
     std::optional<bool> rumbleEnabled;
     std::optional<int32_t> muteHotkey;
+    std::optional<int32_t> fastForwardSpeed;  // [game] fast_forward_speed: 2..8 times
+    std::optional<bool> fastForwardToggle;    // [game] fast_forward_toggle: a press toggles it, else hold
+    std::optional<bool> fasterMenus;          // [game] faster_menus: menus, saves and loads run faster
+    std::optional<bool> checkUpdates;         // [game] check_updates: look for a new release at start
     std::map<std::string, std::string> controllerExpressions;
     // NSMBW: [keyboard] action = "comma-separated SDL scancode names" (keybinds.h).
     std::map<std::string, std::string> keyboardBindings;
@@ -516,6 +520,12 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     if (auto value = FindConfigInt(document, "audio", "mute_key")) {
         config.muteHotkey = *value;
     }
+    if (auto value = FindConfigInt(document, "game", "fast_forward_speed")) {
+        config.fastForwardSpeed = *value;
+    }
+    config.fastForwardToggle = FindConfigValue<bool>(document, "game", "fast_forward_toggle");
+    config.fasterMenus = FindConfigValue<bool>(document, "game", "faster_menus");
+    config.checkUpdates = FindConfigValue<bool>(document, "game", "check_updates");
 
     if (const auto* section = document.contains("controller") ? &document.at("controller") : nullptr;
         section != nullptr && section->is_table()) {
@@ -930,6 +940,42 @@ inline int32_t MuteHotkey(int32_t fallback) {
 inline bool SetMuteHotkey(int32_t value) {
     Mutable().muteHotkey = value;
     return WriteSetting("audio", "mute_key", std::to_string(value));
+}
+
+inline int32_t FastForwardSpeed(int32_t fallback = 3) {
+    return std::clamp(Get().fastForwardSpeed.value_or(fallback), 2, 8);
+}
+
+inline bool SetFastForwardSpeed(int32_t value) {
+    Mutable().fastForwardSpeed = value;
+    return WriteSetting("game", "fast_forward_speed", std::to_string(value));
+}
+
+inline bool FastForwardToggle(bool fallback = false) {
+    return Get().fastForwardToggle.value_or(fallback);
+}
+
+inline bool SetFastForwardToggle(bool value) {
+    Mutable().fastForwardToggle = value;
+    return WriteSetting("game", "fast_forward_toggle", value ? "true" : "false");
+}
+
+inline bool CheckUpdates(bool fallback = true) {
+    return Get().checkUpdates.value_or(fallback);
+}
+
+inline bool SetCheckUpdates(bool value) {
+    Mutable().checkUpdates = value;
+    return WriteSetting("game", "check_updates", value ? "true" : "false");
+}
+
+inline bool FasterMenus(bool fallback = true) {
+    return Get().fasterMenus.value_or(fallback);
+}
+
+inline bool SetFasterMenus(bool value) {
+    Mutable().fasterMenus = value;
+    return WriteSetting("game", "faster_menus", value ? "true" : "false");
 }
 
 inline bool SetAudioVolume(float value) {

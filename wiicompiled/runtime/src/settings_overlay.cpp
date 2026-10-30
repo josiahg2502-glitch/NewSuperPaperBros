@@ -47,6 +47,8 @@ extern "C" uint8_t* aurora_load_png_rgba(const char* path, uint32_t* width, uint
 #include <string>
 #include <string_view>
 #include <utility>
+#include <cfloat>
+#include <functional>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -61,11 +63,18 @@ extern "C" void PAD_HLE_SetRumbleEnabled(bool enabled);
 #include <aurora/aurora.h>
 #include <aurora/gfx.h>
 #include "spm_map_sweep.h"
+#include "updater.h"
+#include "mod_install.h"
+#include <SDL3/SDL_misc.h>
+#include <filesystem>
 #include <vector>
 #include <fstream>
 #include <cstring>
 
 extern "C" int g_gxFrameCount;
+// projects/spm/pal/tools/make_pal_runtime.py sets this to 1 in the PAL engine (the Options menu's Language row).
+#define SPM_REGION_PAL 0
+void VI_HLE_SetSpeed(uint32_t speed);
 
 // Defined in runtime/src/hle/audio/ax_mix.cpp. That header is private to the HLE
 // directory and is not on this target's include path.
@@ -315,6 +324,26 @@ const char* GraphicsApiDisplayName() {
 
 bool g_topBarVisible = false;
 bool g_exitPromptOpen = false;
+using Clock = std::chrono::steady_clock;
+// Options menu and fast-forward state (the menu itself is drawn further down, DrawOptionsMenu).
+enum : uint32_t { kOptLeft = 1, kOptRight = 2, kOptUp = 4, kOptDown = 8, kOptConfirm = 16, kOptBack = 32 };
+std::atomic<uint32_t> g_optEvents{0};
+std::atomic<bool> g_optToggleRequest{false};
+bool g_optOpen = false;
+int g_optTab = 0, g_optRow = 0;
+bool g_optQuitPrompt = false;
+int g_optQuitChoice = 1;          // 0 Quit, 1 Cancel
+uint32_t g_optPrevHold = 0, g_optSuppress = 0;
+Clock::time_point g_optLastToggle{}, g_optOpenedAt{};
+std::array<Clock::time_point, 4> g_optRepeatAt{};
+
+// Fast-forward (held or toggled) and faster menus / loading.
+int g_ffSpeed = RuntimeConfigFile::FastForwardSpeed(3);
+bool g_ffToggleMode = RuntimeConfigFile::FastForwardToggle(false);
+bool g_fasterMenus = RuntimeConfigFile::FasterMenus(true);
+std::atomic<bool> g_ffKeyHeld{false}, g_ffPadHeld{false}, g_ffToggled{false};
+uint32_t g_appliedSpeed = 1;
+void RequestOptionsToggle();
 bool g_rumbleEnabled = RuntimeConfigFile::RumbleEnabled(true);
 int g_controllerPort = 0;
 float g_resolutionScale = RuntimeConfigFile::ResolutionMultiplier(1.0f);
@@ -1731,7 +1760,7 @@ void DrawStartupScreen() {
                 GameLayout::DrawText(list, view, *pmFont, u, 0.0f, cardY - 22.0f + bob, Fit(u, 17.0f), 0x3A2A18FFu,
                                      0x3A2A18FFu, 1.0f, 1, 1);
                 // How to reach the settings, along the card's bottom edge.
-                const auto hint = GameLayout::Utf16("F10 = settings menu   F11 = fullscreen / window");
+                const auto hint = GameLayout::Utf16("HOME or F10 = Options   F11 = fullscreen / window");
                 GameLayout::DrawText(list, view, *pmFont, hint, 0.0f, cardY - hh + 16.0f + bob, Fit(hint, 12.0f),
                                      0x6A5A48FFu, 0x6A5A48FFu, 1.0f, 1, 1);
             }
@@ -2618,13 +2647,14 @@ void PersistDisplayModeIfChanged() {
 
 void ApplyInputBlockState() {
     const bool blocked = controller_mapping_wizard::IsActive() || g_rebind.active ||
-                         g_exitPromptOpen || g_topBarVisible || StartupScreenVisible();
+                         g_exitPromptOpen || g_topBarVisible || g_optOpen || StartupScreenVisible();
     PADBlockInput(blocked);
     InputBindings::SetInputBlocked(blocked);
 }
 } // namespace
 
 void InitializeRuntimeSettings() noexcept {
+    Updater::Start();
     PAD_HLE_SetRumbleEnabled(g_rumbleEnabled);
     InputBindings::Reload();
     controller_mapping_wizard::LoadPersistedMappings();
@@ -2686,8 +2716,27 @@ void HandleEvents(const AuroraEvent* events) noexcept {
             RuntimeConfigFile::SetDisplayMode(std::string(kDisplayModeConfigNames[static_cast<size_t>(g_displayMode)]));
         }
         if (!g_rebind.active && IsToggleKey(ev->sdl, SDL_SCANCODE_F10)) {
-            SetTopBarVisible(!g_topBarVisible);
+            if (g_topBarVisible) {
+                SetTopBarVisible(false);
+            } else {
+                RequestOptionsToggle();
+            }
             ApplyInputBlockState();
+        }
+        // Fast-forward: F on the keyboard, a right stick click on a controller; the Guide button opens Options.
+        if (!g_rebind.active && ev->sdl.type == SDL_EVENT_KEY_DOWN && ev->sdl.key.scancode == SDL_SCANCODE_F) {
+            if (!ev->sdl.key.repeat) g_ffToggled = !g_ffToggled.load();
+            g_ffKeyHeld = true;
+        }
+        if (ev->sdl.type == SDL_EVENT_KEY_UP && ev->sdl.key.scancode == SDL_SCANCODE_F) g_ffKeyHeld = false;
+        if (ev->sdl.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || ev->sdl.type == SDL_EVENT_GAMEPAD_BUTTON_UP) {
+            const bool down = ev->sdl.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+            if (ev->sdl.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_STICK) {
+                if (down) g_ffToggled = !g_ffToggled.load();
+                g_ffPadHeld = down;
+            } else if (down && ev->sdl.gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE) {
+                RequestOptionsToggle();
+            }
         }
         if (!g_rebind.active && g_muteHotkey != PAD_KEY_INVALID &&
             IsToggleKey(ev->sdl, static_cast<SDL_Scancode>(g_muteHotkey))) {
@@ -2700,6 +2749,8 @@ void HandleEvents(const AuroraEvent* events) noexcept {
         if (!g_rebind.active && IsToggleKey(ev->sdl, SDL_SCANCODE_ESCAPE)) {
             if (g_exitPromptOpen) {
                 g_exitPromptOpen = false;
+            } else if (g_optOpen) {
+                g_optEvents |= kOptBack;
             } else if (g_topBarVisible) {
                 SetTopBarVisible(false);
             }
@@ -2994,6 +3045,432 @@ void PatchBootStrings() {
     RT_LOGF(RT_TAG_RUNTIME, "boot screen: %d line(s) now read \"Enjoy New Super Paper Bros!\"\n", patched);
 }
 
+// ---- Options: the player's settings menu, drawn like the game's own menus (its font, a paper card) ----
+// Opened with HOME / F10 / a controller's Guide button; the game is frozen while it is up. The ImGui panel above is
+// for development only (Options > Game > Developer tools).
+namespace {
+
+void SetFrameInterpolationMode(int mode) {
+    g_frameInterpolationMode = mode;
+    const uint32_t targetFps = kFrameInterpolationTargetFps[static_cast<size_t>(mode)];
+    aurora_set_frame_interpolation_fps(targetFps);
+    RuntimeConfigFile::SetFrameInterpolationFps(targetFps);
+    LimitResolutionForFrameRate();
+    if (aurora_get_display_mode() == AURORA_DISPLAY_MODE_EXCLUSIVE) aurora_set_display_mode(AURORA_DISPLAY_MODE_EXCLUSIVE);
+}
+
+void UpdateGameSpeed() {
+    uint32_t speed = 1;
+    if (!g_optOpen && !StartupScreenVisible()) {
+        static const bool testFf = std::getenv("SPM_TEST_FASTFORWARD") != nullptr;  // hidden test runs: always on
+        const bool ff = testFf || (g_ffToggleMode ? g_ffToggled.load() : (g_ffKeyHeld.load() || g_ffPadHeld.load()));
+        if (ff) {
+            speed = static_cast<uint32_t>(g_ffSpeed);
+        } else if (g_fasterMenus) {
+            const int seq = SpmMapSweep::Seq();
+            if (seq == 3 || seq == 5 || SpmMapSweep::PauseMenuOpen()) speed = 2;  // map changes, file load, pause menu
+        }
+    }
+    if (speed == g_appliedSpeed) return;
+    // Faster than the display: presents must not wait for it, and interpolated frames would only slow it down.
+    const bool fast = speed > 1;
+    if (fast != (g_appliedSpeed > 1)) {
+        aurora_set_vsync(fast ? false : g_vsync.load());
+        aurora_set_frame_interpolation_fps(fast ? 0 : kFrameInterpolationTargetFps[static_cast<size_t>(g_frameInterpolationMode)]);
+    }
+    VI_HLE_SetSpeed(speed);
+    g_appliedSpeed = speed;
+}
+
+void SetOptionsOpen(bool open) {
+    if (open == g_optOpen) return;
+    g_optOpen = open;
+    g_optLastToggle = Clock::now();
+    g_optQuitPrompt = false;
+    if (open) {
+        g_optOpenedAt = Clock::now();
+        g_optRow = 0;
+        g_ffToggled = false;
+    }
+    SpmMapSweep::SetGamePaused(open);
+}
+
+void RequestOptionsToggle() {
+    if (StartupScreenVisible() || Clock::now() - g_optLastToggle < std::chrono::milliseconds(250)) return;
+    g_optToggleRequest = true;
+}
+
+struct OptRow {
+    std::string label;
+    std::string value;             // empty: an action row
+    std::function<void(int)> step; // -1 / +1 for a value, 0 for confirm
+    const char* help = "";
+};
+
+std::string OnOff(bool on) { return on ? "On" : "Off"; }
+std::string Percent(int v) { return std::to_string(v) + "%"; }
+int Cycle(int v, int dir, int count) { return ((v + dir) % count + count) % count; }
+
+void StepVolume(int& percent, int dir, void (*apply)(float), bool (*save)(float)) {
+    percent = std::clamp(percent + (dir == 0 ? 10 : dir * 10), 0, 100);
+    if (dir == 0 && percent == 100) percent = 0;
+    apply(percent / 100.0f);
+    save(percent / 100.0f);
+}
+
+constexpr const char* kOptTabs[] = {"Game", "Display", "Sound", "Controls", "Mods"};
+constexpr int kOptTabCount = int(std::size(kOptTabs));
+
+std::vector<OptRow> OptionsRows(int tab) {
+    std::vector<OptRow> rows;
+    if (tab == 0) {
+        rows.push_back({"Fast-forward speed", std::to_string(g_ffSpeed) + "x", [](int d) {
+            g_ffSpeed = d == 0 ? (g_ffSpeed >= 8 ? 2 : g_ffSpeed + 1) : std::clamp(g_ffSpeed + d, 2, 8);
+            RuntimeConfigFile::SetFastForwardSpeed(g_ffSpeed);
+        }, "How fast the game runs while fast-forward is on."});
+        rows.push_back({"Fast-forward button", g_ffToggleMode ? "Press to toggle" : "Hold", [](int) {
+            g_ffToggleMode = !g_ffToggleMode;
+            RuntimeConfigFile::SetFastForwardToggle(g_ffToggleMode);
+        }, "Keyboard: F.  Controller: click the right stick."});
+        rows.push_back({"Faster menus and loading", OnOff(g_fasterMenus), [](int) {
+            g_fasterMenus = !g_fasterMenus;
+            RuntimeConfigFile::SetFasterMenus(g_fasterMenus);
+        }, "The pause menu, room changes and file loading run at double speed."});
+#if SPM_REGION_PAL
+        {
+            // The Wii system language the European disc reads (SC codes 1 en, 2 de, 3 fr, 4 es, 5 it).
+            static constexpr const char* kCodes[] = {"en", "de", "fr", "es", "it"};
+            static constexpr const char* kNames[] = {"English", "Deutsch", "Francais", "Espanol", "Italiano"};
+            const int cur = std::clamp(int(RuntimeConfigFile::Language()) - 1, 0, 4);
+            rows.push_back({"Language", kNames[cur], [cur](int d) {
+                RuntimeConfigFile::SetLanguage(kCodes[Cycle(cur, d == 0 ? 1 : d, 5)]);
+            }, "Takes effect the next time the game starts."});
+        }
+#endif
+        if (!Updater::Current().empty()) {
+            using S = Updater::State;
+            const S st = Updater::GetState();
+            const std::string value = st == S::Available ? Updater::Latest() + " - install"
+                                    : st == S::Checking ? "Checking..."
+                                    : st == S::Downloading ? "Downloading..."
+                                    : st == S::UpToDate ? "Up to date (" + Updater::Current() + ")"
+                                    : st == S::Failed ? "Couldn't connect - retry"
+                                                      : "Off";
+            rows.push_back({"Update", value, [](int d) {
+                if (d == 0) Updater::Install();
+            }, st == S::Available ? "Downloads the new version, then restarts the game into it. Saves and settings are kept."
+                                  : "New versions are checked for when the game starts."});
+            rows.push_back({"Check for updates", OnOff(Updater::CheckEnabled()), [](int) {
+                Updater::SetCheckEnabled(!Updater::CheckEnabled());
+            }, "Look for a new version each time the game starts."});
+        }
+        rows.push_back({"Return to title screen", "", [](int d) {
+            if (d != 0) return;
+            SpmMapSweep::ReturnToTitle();
+            SetOptionsOpen(false);
+        }, "Leave the game without saving and go back to the title screen."});
+        rows.push_back({"Developer tools", "", [](int d) {
+            if (d != 0) return;
+            SetOptionsOpen(false);
+            SetTopBarVisible(true);
+        }, "Warps, items and flags, for testing. F10 closes it."});
+        rows.push_back({"Quit to desktop", "", [](int d) {
+            if (d != 0) return;
+            g_optQuitPrompt = true;
+            g_optQuitChoice = 1;
+        }, "Close the game. Anything not saved in-game is lost."});
+    } else if (tab == 1) {
+        static constexpr const char* kModes[] = {"Windowed", "Fullscreen", "Exclusive fullscreen"};
+        g_displayMode = static_cast<int>(aurora_get_display_mode());
+        rows.push_back({"Window", kModes[std::clamp(g_displayMode, 0, 2)], [](int d) {
+            const int mode = d == 0 ? Cycle(g_displayMode, 1, 2) : Cycle(g_displayMode, d, 3);
+            aurora_set_display_mode(static_cast<AuroraDisplayMode>(mode));
+            g_displayMode = static_cast<int>(aurora_get_display_mode());
+            RuntimeConfigFile::SetDisplayMode(std::string(kDisplayModeConfigNames[static_cast<size_t>(g_displayMode)]));
+        }, "F11 also switches between a window and fullscreen."});
+        int res = 0;
+        for (int i = 0; i < int(kResolutions.size()); ++i)
+            if (std::fabs(kResolutions[i].scale - g_resolutionScale) < 0.001f) res = i;
+        rows.push_back({"Resolution", kResolutions[res].label, [res](int d) {
+            int next = res;
+            for (int tries = 0; tries < int(kResolutions.size()); ++tries) {
+                next = Cycle(next, d == 0 ? 1 : d, int(kResolutions.size()));
+                if (!(IsHighFrameRateMode() && IsHighResolutionScale(kResolutions[next].scale))) break;
+            }
+            SetResolutionScale(kResolutions[next].scale);
+        }, "How sharp the picture is. Auto matches your screen; higher looks better but needs a faster GPU."});
+        const int aspectMode = DisplaySettings::Latest().aspect;
+        int asp = 0;
+        for (int i = 0; i < int(kAspects.size()); ++i)
+            if (kAspects[i].mode == aspectMode) asp = i;
+        rows.push_back({"Aspect ratio", kAspects[asp].label, [asp](int d) {
+            SetAspectMode(kAspects[Cycle(asp, d == 0 ? 1 : d, int(kAspects.size()))].mode);
+        }, (aspectMode != DisplaySettings::kAspect4x3) != DisplaySettings::GameWidescreen()
+               ? "Switching between 4:3 and widescreen takes effect after a restart."
+               : "Fill Window uses every pixel of wide and ultrawide screens."});
+        static constexpr const char* kRates[] = {"60 FPS (original)", "120 FPS", "180 FPS", "240 FPS"};
+        rows.push_back({"Frame rate", kRates[g_frameInterpolationMode], [](int d) {
+            SetFrameInterpolationMode(Cycle(g_frameInterpolationMode, d == 0 ? 1 : d, 4));
+        }, "Above 60, extra frames are made between the game's own for smoother motion."});
+        rows.push_back({"V-Sync", OnOff(g_vsync.load()), [](int) { SetVSync(!g_vsync.load()); },
+                        "No screen tearing. Turn off only if your screen has its own sync (G-Sync, FreeSync)."});
+        rows.push_back({"FPS counter", OnOff(g_showFps), [](int) { SetShowFps(!g_showFps); }, "Frames per second in the corner."});
+    } else if (tab == 2) {
+        rows.push_back({"Master volume", Percent(g_audioVolumePercent), [](int d) {
+            StepVolume(g_audioVolumePercent, d, [](float v) { AudioBackend::Instance().SetMasterVolume(v); },
+                       [](float v) { return RuntimeConfigFile::SetAudioVolume(v); });
+        }});
+        rows.push_back({"Music", Percent(g_musicVolumePercent), [](int d) {
+            StepVolume(g_musicVolumePercent, d, [](float v) { MusicAttenuation::SetMusicVolume(v); },
+                       [](float v) { return RuntimeConfigFile::SetMusicVolume(v); });
+        }});
+        rows.push_back({"Sound effects", Percent(g_soundEffectsVolumePercent), [](int d) {
+            StepVolume(g_soundEffectsVolumePercent, d, [](float v) { MusicAttenuation::SetSoundEffectsVolume(v); },
+                       [](float v) { return RuntimeConfigFile::SetSoundEffectsVolume(v); });
+        }});
+        rows.push_back({"Voices", Percent(g_voicesVolumePercent), [](int d) {
+            StepVolume(g_voicesVolumePercent, d, [](float v) { MusicAttenuation::SetVoicesVolume(v); },
+                       [](float v) { return RuntimeConfigFile::SetVoicesVolume(v); });
+        }});
+        rows.push_back({"Mute", OnOff(g_audioMuted), [](int) {
+            g_audioMuted = !g_audioMuted;
+            AudioBackend::Instance().SetMuted(g_audioMuted);
+            RuntimeConfigFile::SetAudioMuted(g_audioMuted);
+        }, "The \\ key mutes and unmutes at any time."});
+    } else if (tab == 4) {
+        for (const ModInstall::Mod& mod : ModInstall::List()) {
+            const std::string name = mod.name;
+            const bool on = mod.enabled;
+            rows.push_back({name, OnOff(on), [name, on](int) { ModInstall::SetEnabled(name, !on); },
+                            "Changes apply the next time the game starts."});
+        }
+        rows.push_back({"Open the mods folder", "", [](int d) {
+            if (d != 0) return;
+            std::error_code ec;
+            std::filesystem::create_directories(ModInstall::Folder(), ec);
+            SDL_OpenURL(("file:///" + RuntimeConfigFile::PathToUtf8(ModInstall::Folder())).c_str());
+        }, "Put a mod's .zip (or its folder) here; it is installed the next time the game starts."});
+    } else {
+        rows.push_back({"Vibration", OnOff(g_rumbleEnabled), [](int) {
+            g_rumbleEnabled = !g_rumbleEnabled;
+            PAD_HLE_SetRumbleEnabled(g_rumbleEnabled);
+            RuntimeConfigFile::SetRumbleEnabled(g_rumbleEnabled);
+            if (!g_rumbleEnabled) {
+                constexpr std::array<uint32_t, PAD_MAX_CONTROLLERS> stopAll{
+                    PAD_MOTOR_STOP_HARD, PAD_MOTOR_STOP_HARD, PAD_MOTOR_STOP_HARD, PAD_MOTOR_STOP_HARD,
+                };
+                PADControlAllMotors(stopAll.data());
+            }
+        }, "Controller rumble."});
+        rows.push_back({"Shake button (Wii Remote shake)", Keybinds::KeyLabel(Keybinds::kShake), [](int) {},
+                        "On a controller, the button shown on the controls card. Keyboard keys: Developer tools."});
+    }
+    return rows;
+}
+
+// On the title screen, while a newer release is out: where to install it.
+void DrawUpdateNotice() {
+    if (g_optOpen || StartupScreenVisible() || Updater::GetState() != Updater::State::Available || SpmMapSweep::Seq() != 1) return;
+    static const std::shared_ptr<GameLayout::Font> font = GameLayout::LoadFont("papermarioset_US.bfn");
+    if (!GameLayout::FontReady(font.get())) return;
+    ImDrawList* list = ImGui::GetForegroundDrawList();
+    const GameLayout::View view = GameLayout::GameView();
+    const float k = view.scale;
+    const auto u = GameLayout::Utf16("Update " + Updater::Latest() + " is out!  HOME > Options > Game");
+    const float w = GameLayout::MeasureText(*font, u, 18.0f) * 0.5f + 18.0f, y = -200.0f;
+    list->AddRectFilled(ImVec2(view.centerX - w * k, view.centerY - (y + 16) * k), ImVec2(view.centerX + w * k, view.centerY - (y - 16) * k),
+                        IM_COL32(255, 252, 240, 240), 10.0f * k);
+    list->AddRect(ImVec2(view.centerX - w * k, view.centerY - (y + 16) * k), ImVec2(view.centerX + w * k, view.centerY - (y - 16) * k),
+                  IM_COL32(24, 18, 12, 255), 10.0f * k, 0, 3.0f * k);
+    GameLayout::DrawText(list, view, *font, u, 0.0f, y, 18.0f, 0x18120CFFu, 0x18120CFFu, 1.0f, 1, 1);
+}
+
+void HandleOptionsInput() {
+    const uint32_t ev = g_optEvents.exchange(0);
+    if (g_optQuitPrompt) {
+        if (ev & (kOptLeft | kOptRight | kOptUp | kOptDown)) g_optQuitChoice ^= 1;
+        if (ev & kOptBack) g_optQuitPrompt = false;
+        if (ev & kOptConfirm) {
+            if (g_optQuitChoice == 0) ExitForAuroraWindowClose();
+            g_optQuitPrompt = false;
+        }
+        return;
+    }
+    if (ev & kOptBack) {
+        SetOptionsOpen(false);
+        return;
+    }
+    const std::vector<OptRow> rows = OptionsRows(g_optTab);
+    const int count = static_cast<int>(rows.size());
+    // Row -1 is the tab strip.
+    if (ev & kOptUp) g_optRow = g_optRow <= -1 ? count - 1 : g_optRow - 1;
+    if (ev & kOptDown) g_optRow = g_optRow >= count - 1 ? -1 : g_optRow + 1;
+    const int dir = (ev & kOptLeft) ? -1 : (ev & kOptRight) ? 1 : 0;
+    if (g_optRow < 0) {
+        if (dir != 0) g_optTab = Cycle(g_optTab, dir, kOptTabCount);
+        if (ev & kOptConfirm) g_optRow = 0;
+        return;
+    }
+    g_optRow = std::min(g_optRow, count - 1);
+    const OptRow& row = rows[static_cast<size_t>(g_optRow)];
+    if (dir != 0 && !row.value.empty()) row.step(dir);
+    if (ev & kOptConfirm) row.step(0);
+}
+
+void DrawOptionsMenu() {
+    if (!g_optOpen) return;
+    static const std::shared_ptr<GameLayout::Font> font = GameLayout::LoadFont("papermarioset_US.bfn");
+    const bool gameFont = GameLayout::FontReady(font.get());
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImDrawList* list = ImGui::GetForegroundDrawList();
+    const GameLayout::View view = GameLayout::GameView();
+    const float k = view.scale;
+    const float t = std::chrono::duration<float>(Clock::now() - g_optOpenedAt).count();
+    const float pop = std::min(1.0f, t * 6.0f);  // the card unfolds in a sixth of a second
+    auto S = [&](float x, float y) { return ImVec2(view.centerX + x * k, view.centerY - y * k * pop); };
+    auto Txt = [&](const std::string& s, float x, float y, float size, uint32_t rgba, int originH = 0, float outline = 0.0f,
+                   uint32_t outlineRgba = 0x18120CFFu) {
+        if (!gameFont) {
+            const ImU32 col = IM_COL32(rgba >> 24, (rgba >> 16) & 255, (rgba >> 8) & 255, rgba & 255);
+            const float px = size * k * 0.9f;
+            const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(px, FLT_MAX, 0.0f, s.c_str());
+            const ImVec2 p = S(x, y);
+            list->AddText(ImGui::GetFont(), px, ImVec2(p.x - sz.x * originH * 0.5f, p.y - sz.y * 0.5f), col, s.c_str());
+            return;
+        }
+        const auto u = GameLayout::Utf16(s);
+        const float yy = y * pop;
+        if (outline > 0.0f)
+            for (int j = 0; j < 12; ++j) {
+                const float a = j * 0.5236f;
+                GameLayout::DrawText(list, view, *font, u, x + std::cos(a) * outline, yy + std::sin(a) * outline, size,
+                                     outlineRgba, outlineRgba, 1.0f, originH, 1);
+            }
+        GameLayout::DrawText(list, view, *font, u, x, yy, size, rgba, rgba, 1.0f, originH, 1);
+    };
+    auto Box = [&](float x0, float y0, float x1, float y1, ImU32 fill, float round, float border = 4.0f,
+                   ImU32 ink = IM_COL32(24, 18, 12, 255)) {
+        list->AddRectFilled(S(x0, y0), S(x1, y1), fill, round * k);
+        if (border > 0.0f) list->AddRect(S(x0, y0), S(x1, y1), ink, round * k, 0, border * k);
+    };
+
+    list->AddRectFilled(viewport->Pos, ImVec2(viewport->Pos.x + viewport->Size.x, viewport->Pos.y + viewport->Size.y),
+                        IM_COL32(10, 16, 40, 150));
+    const float hw = 340.0f, top = 196.0f, bottom = -212.0f;
+    Box(-hw + 12, top - 12, hw + 12, bottom - 12, IM_COL32(0, 0, 0, 90), 18.0f, 0.0f);   // shadow
+    Box(-hw, top, hw, bottom, IM_COL32(255, 252, 240, 255), 18.0f, 6.0f);              // the paper card
+    for (float ly = top - 108.0f; ly > bottom + 70.0f; ly -= 33.0f)                     // ruled lines
+        list->AddLine(S(-hw + 18, ly), S(hw - 18, ly), IM_COL32(170, 200, 230, 90), 2.0f * k);
+    // Title tab, like the game's menu headers.
+    Box(-hw + 20, top + 30, -hw + 230, top - 22, IM_COL32(255, 214, 64, 255), 14.0f, 5.0f);
+    Txt("Options", -hw + 125, top + 4, 34.0f, 0xFFFFFFFFu, 1, 2.5f);
+
+    // Tabs.
+    const float tabW = (2 * hw - 60.0f) / kOptTabCount, tabY = top - 58.0f;
+    for (int i = 0; i < kOptTabCount; ++i) {
+        const float x0 = -hw + 30 + i * tabW;
+        const bool sel = i == g_optTab;
+        const bool focus = sel && g_optRow < 0;
+        Box(x0 + 4, tabY + 20, x0 + tabW - 4, tabY - 20, sel ? IM_COL32(254, 230, 133, 255) : IM_COL32(236, 228, 210, 255),
+            12.0f, focus ? 5.0f : 3.0f, focus ? IM_COL32(220, 60, 40, 255) : IM_COL32(24, 18, 12, 255));
+        Txt(kOptTabs[i], x0 + tabW * 0.5f, tabY, 22.0f, sel ? 0x18120CFFu : 0x6A5A48FFu, 1);
+    }
+
+    // Text no wider than `maxW` layout units: the size shrinks to fit.
+    auto Fit = [&](const std::string& text, float size, float maxW) {
+        if (!gameFont) return size;
+        const float w = GameLayout::MeasureText(*font, GameLayout::Utf16(text), size);
+        return w > maxW ? size * maxW / w : size;
+    };
+    const std::vector<OptRow> rows = OptionsRows(g_optTab);
+    const float rowH = 33.0f, rowsTop = tabY - 50.0f, rowsBottom = bottom + 76.0f;
+    const int visible = std::max(1, int((rowsTop - rowsBottom) / rowH) + 1);
+    static int first = 0;  // the first row shown: the list scrolls to keep the selected row in view
+    if (g_optRow >= 0 && g_optRow < first) first = g_optRow;
+    if (g_optRow >= first + visible) first = g_optRow - visible + 1;
+    first = std::clamp(first, 0, std::max(0, int(rows.size()) - visible));
+    float y = rowsTop;
+    for (int i = first; i < int(rows.size()) && i < first + visible; ++i, y -= rowH) {
+        const OptRow& row = rows[static_cast<size_t>(i)];
+        const bool sel = i == g_optRow;
+        if (sel) {
+            Box(-hw + 22, y + 15, hw - 22, y - 15, IM_COL32(254, 230, 133, 255), 10.0f, 3.0f, IM_COL32(220, 160, 30, 255));
+            const float bob = std::sin(t * 8.0f) * 3.0f;  // the pointing cursor
+            list->AddTriangleFilled(S(-hw + 30 + bob, y + 9), S(-hw + 46 + bob, y), S(-hw + 30 + bob, y - 9),
+                                    IM_COL32(220, 60, 40, 255));
+        }
+        const bool action = row.value.empty();
+        const float labelW = action ? 2 * hw - 90.0f : 2 * hw - 330.0f;
+        Txt(row.label, -hw + 56, y, Fit(row.label, 20.0f, labelW), action ? 0x2A5AB0FFu : 0x18120CFFu, 0);
+        if (!action) {
+            Txt(row.value, hw - 140, y, Fit(row.value, 20.0f, 180.0f), 0x18120CFFu, 1);
+            const ImU32 arrow = sel ? IM_COL32(220, 60, 40, 255) : IM_COL32(150, 140, 120, 255);
+            list->AddTriangleFilled(S(hw - 252, y), S(hw - 240, y + 9), S(hw - 240, y - 9), arrow);
+            list->AddTriangleFilled(S(hw - 40, y + 9), S(hw - 28, y), S(hw - 40, y - 9), arrow);
+        }
+    }
+    // More rows above or below.
+    const ImU32 more = IM_COL32(150, 140, 120, 255);
+    if (first > 0) list->AddTriangleFilled(S(-8, rowsTop + 26), S(8, rowsTop + 26), S(0, rowsTop + 36), more);
+    if (first + visible < int(rows.size()))
+        list->AddTriangleFilled(S(-8, y + rowH - 22), S(8, y + rowH - 22), S(0, y + rowH - 32), more);
+    // What the selected row does, and the buttons.
+    const char* help = g_optRow >= 0 && g_optRow < int(rows.size()) ? rows[static_cast<size_t>(g_optRow)].help
+                                                                     : "Left and right pick a page.";
+    Txt(help, 0, bottom + 50.0f, Fit(help, 15.0f, 2 * hw - 40.0f), 0x5A4A38FFu, 1);
+    Txt("Up/Down choose   Left/Right change   A / 2 select   B / 1 / HOME close", 0, bottom + 22.0f, 14.0f, 0x8A7A68FFu, 1);
+
+    if (g_optQuitPrompt) {
+        Box(-200, 70, 200, -70, IM_COL32(255, 252, 240, 255), 16.0f, 6.0f);
+        Txt("Quit to desktop?", 0, 32, 28.0f, 0x18120CFFu, 1);
+        for (int i = 0; i < 2; ++i) {
+            const float cx = i == 0 ? -90.0f : 90.0f;
+            const bool sel = g_optQuitChoice == i;
+            Box(cx - 70, -12, cx + 70, -52, sel ? IM_COL32(254, 230, 133, 255) : IM_COL32(236, 228, 210, 255), 12.0f,
+                sel ? 5.0f : 3.0f, sel ? IM_COL32(220, 60, 40, 255) : IM_COL32(24, 18, 12, 255));
+            Txt(i == 0 ? "Quit" : "Cancel", cx, -32, 22.0f, 0x18120CFFu, 1);
+        }
+    }
+}
+} // namespace
+
+void FilterMenuInput(uint32_t chan, WiiRemoteInput::KpadSample& sample) noexcept {
+    if (chan != 0) return;
+    constexpr uint32_t kLeft = 0x0001, kRight = 0x0002, kDown = 0x0004, kUp = 0x0008, kTwo = 0x0100, kOne = 0x0200,
+                       kB = 0x0400, kA = 0x0800, kHome = 0x8000;
+    const uint32_t hold = sample.hold;
+    const uint32_t pressed = hold & ~g_optPrevHold;
+    g_optPrevHold = hold;
+    // Buttons that closed the menu stay away from the game until they are let go.
+    g_optSuppress &= hold;
+    if (pressed & kHome) {  // the game's own HOME Menu never opens: Options takes its place
+        RequestOptionsToggle();
+        g_optSuppress |= kHome;
+    }
+    if (g_optOpen) {
+        const bool upright = sample.hasNunchuk;
+        const uint32_t dirs[4] = {upright ? kLeft : kUp, upright ? kRight : kDown, upright ? kUp : kRight,
+                                  upright ? kDown : kLeft};
+        static constexpr uint32_t kEv[4] = {kOptLeft, kOptRight, kOptUp, kOptDown};
+        uint32_t ev = 0;
+        const auto now = Clock::now();
+        for (int i = 0; i < 4; ++i) {
+            if (pressed & dirs[i]) {
+                ev |= kEv[i];
+                g_optRepeatAt[i] = now + std::chrono::milliseconds(400);
+            } else if ((hold & dirs[i]) && now >= g_optRepeatAt[i]) {
+                ev |= kEv[i];
+                g_optRepeatAt[i] = now + std::chrono::milliseconds(90);
+            }
+        }
+        if (pressed & (kTwo | kA)) ev |= kOptConfirm;
+        if (pressed & (kOne | kB)) ev |= kOptBack;
+        g_optEvents |= ev;
+        g_optSuppress |= hold;
+    }
+    sample.hold &= ~g_optSuppress;
+}
+
 void Draw() noexcept {
     if (RuntimeFrontend::Active()) return;
     PatchBootStrings();
@@ -3013,6 +3490,9 @@ void Draw() noexcept {
         DrawShaderCompilationStatus();
     }
     NetplayUi::Draw();
+    if (g_optToggleRequest.exchange(false)) SetOptionsOpen(!g_optOpen);
+    if (g_optOpen) HandleOptionsInput();
+    UpdateGameSpeed();
     DrawFpsOverlay();
     DrawDebugHud();
     DrawMainWindow();
@@ -3020,6 +3500,8 @@ void Draw() noexcept {
     controller_mapping_wizard::Draw();
     ApplyInputBlockState();
     DrawControlsPanel();
+    DrawOptionsMenu();
+    DrawUpdateNotice();
     DrawStartupScreen();
 }
 

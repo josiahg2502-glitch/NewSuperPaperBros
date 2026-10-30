@@ -2,6 +2,7 @@
 
 #include <aurora/aurora.h>
 #include <aurora/event.h>
+#include "wii_remote_input.h"
 
 namespace settings_overlay {
 // Apply persistent controller settings once Aurora has discovered host devices.
@@ -9,6 +10,8 @@ void InitializeRuntimeSettings() noexcept;
 // Draw the F10 settings bar before each Aurora present.
 void HandleEvents(const AuroraEvent* events) noexcept;
 void Draw() noexcept;
+// The first remote's buttons, before the game reads them: HOME opens Options, which then takes the input.
+void FilterMenuInput(uint32_t chan, WiiRemoteInput::KpadSample& sample) noexcept;
 bool StartupScreenVisible() noexcept;
 void NotifyStrapInputAccepted() noexcept;
 void AdvancePresentedFrame() noexcept;

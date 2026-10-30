@@ -1,18 +1,18 @@
 ﻿# Builds New Super Paper Bros. and updates the player's game folder (-Install, default Desktop\My recomps\NewSuperPaperBros).
 #   powershell -ExecutionPolicy Bypass -File tools\package-spm.ps1 [-Build] [-Zip] [-Install <folder>]
-# -Build first rebuilds the game (build-spm.ps1 -SkipTools) and the launcher. -Zip also writes dist\NewSuperPaperBros.zip.
-# Layout: New Super Paper Bros.exe (launcher), README.txt, engine\ (nspb-engine.exe = Play\SuperPaperMario.exe renamed,
+# -Build first rebuilds the game (build-spm.ps1 -SkipTools) and the starter. -Zip also writes dist\NewSuperPaperBros.zip.
+# Layout: New Super Paper Bros.exe (starter: runs engine\nspb-engine.exe), README.txt, engine\ (nspb-engine.exe = Play\SuperPaperMario.exe renamed,
 # engine_usa.dll / engine_pal.dll = the recompiled game per disc region,
 # DLLs, startup\ sprites, wii_bootstrap\, game_files\ = built-in HQ music, UserData\ = saves/settings/mods + HD textures).
-# The disc is never copied in: the launcher extracts the player's image into Disc\ inside the folder.
+# The disc is never copied in: the game sets itself up from the player's image into Disc\ inside the folder.
 # A clean copy is staged in dist\_stage (deleted afterwards) and copied over the game folder, so the saves, Config.toml,
 # mods and Disc\ already there are kept. The version is <Version> in launcher\NewSuperPaperBros.Launcher.csproj.
 [CmdletBinding()] param([switch]$Build, [switch]$Zip, [string]$Install = "$env:USERPROFILE\Desktop\My recomps\NewSuperPaperBros")
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$launcher = "$root\launcher\publish\New Super Paper Bros.exe"
-if ($Build) { & "$PSScriptRoot\build-spm.ps1" -SkipTools; & "$PSScriptRoot\build-launcher.ps1" }
-elseif (-not (Test-Path -LiteralPath $launcher)) { & "$PSScriptRoot\build-launcher.ps1" }
+$starter = "$PSScriptRoot\starter\out\New Super Paper Bros.exe"
+if ($Build) { & "$PSScriptRoot\build-spm.ps1" -SkipTools }
+& "$PSScriptRoot\starter\build-starter.ps1" | Out-Null
 $version = 'v' + ([xml](Get-Content -LiteralPath "$root\launcher\NewSuperPaperBros.Launcher.csproj")).Project.PropertyGroup.Version
 function Mirror([string]$From, [string]$To) {
     robocopy $From $To /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null  # few retries: a running game locks its files
@@ -30,7 +30,7 @@ $stage = "$root\dist\_stage\NewSuperPaperBros"
 Remove-Tree "$root\dist\_stage"
 $engine = "$stage\engine"
 New-Item -ItemType Directory -Force "$engine\UserData\mods" | Out-Null
-Copy-Item -LiteralPath $launcher -Destination $stage
+Copy-Item -LiteralPath $starter -Destination $stage
 # The game: runtime files only (no saves, logs, caches, debug *.disabled switches or the dev texture packs).
 Copy-Item -LiteralPath "$root\Play\SuperPaperMario.exe" -Destination "$engine\nspb-engine.exe"
 # The exe is the loader; the engine proper is one module per disc region (engine_usa.dll, engine_pal.dll from
@@ -41,6 +41,8 @@ foreach ($f in '*.dll', 'dsp_coef.bin', 'initial_pipeline_cache.db', 'portable.t
 # redistributable files) so a PC without the VC++ Redistributable still starts the game.
 foreach ($f in 'msvcp140.dll', 'msvcp140_atomic_wait.dll', 'vcruntime140.dll', 'vcruntime140_1.dll') { Copy-Item "$env:SystemRoot\System32\$f" $engine }
 foreach ($d in 'startup', 'wii_bootstrap') { Mirror "$root\Play\$d" "$engine\$d" }
+# The built-in updater compares this with the latest GitHub release (runtime updater.cpp).
+Set-Content -LiteralPath "$engine\version.txt" -Value $version -Encoding ascii
 # Built-in HQ music: the mod's brstm files, which in the dev tree replaced the originals inside Disc\DATA\files\sound
 # (Disc\sound_original holds the disc's own copies). Only files with a saved original are the mod's, never disc files.
 $audio = "$engine\game_files\sound"
@@ -66,7 +68,7 @@ foreach ($dir in Get-ChildItem -LiteralPath "$root\wiicompiled\Dependencies" -Di
 }
 (Get-Content -LiteralPath "$PSScriptRoot\package-README.txt" -Raw).Replace('{VERSION}', $version) | Set-Content -LiteralPath "$stage\README.txt" -Encoding utf8
 
-# Guard: no disc data comes from the dev tree (the player's own Disc\ is made by the launcher inside the folder).
+# Guard: no disc data comes from the dev tree (the player's own Disc\ is made by the game inside the folder).
 if (Get-ChildItem -LiteralPath $stage -Recurse -Directory | Where-Object { $_.Name -in 'Disc', 'DATA', 'sys' }) { throw 'disc folders in the build' }
 
 if ($Zip) {
@@ -106,7 +108,7 @@ if (Test-Path -LiteralPath "$dist\Play") {
 }
 Remove-Tree "$dist\engine\game_files\README.txt"
 Remove-Tree "$root\dist\_stage"
-# Only the launcher should be visible: hide the engine folder (the launcher finds it regardless).
+# Only the starter should be visible: hide the engine folder (the starter finds it regardless).
 $eng = Get-Item -LiteralPath "$dist\engine" -Force; $eng.Attributes = $eng.Attributes -bor [IO.FileAttributes]::Hidden
 $size = [math]::Round((Get-ChildItem -LiteralPath $dist -Recurse -File -Force | Measure-Object Length -Sum).Sum / 1MB)
 Write-Host "DONE: $dist ($version, $size MB)"

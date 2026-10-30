@@ -15,6 +15,12 @@ void AddItem(int itemId);
 void RemoveItem(int itemId);
 void SetTippi(bool enabled);          // Tippi slot + guide on/off
 void ReturnToTitle();                 // back to the title screen (from a map only)
+// Options menu: freeze the game in a map (spmarioSystemLevel, as its own menus do), then put the level back.
+void SetGamePaused(bool paused);
+// The game's sequence: 0 logo, 1 title, 2 in a map, 3 map change, 4 game over, 5 file load; -1 before boot.
+int Seq();
+// Pause menu (pausewin) open, for faster menus.
+bool PauseMenuOpen();
 void RemoveCharOrPixl(int itemId);   // character / Pixl slot; not the character played or the Pixl in use
 void Unlock(int itemId, bool pixl);   // add the character / Pixl item, then make it selectable
 void AddCoins(int amount);

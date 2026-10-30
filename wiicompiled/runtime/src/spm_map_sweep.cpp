@@ -659,6 +659,29 @@ void ReturnToTitle() {
         InvokeIndirectCpu(0x8017B3C8, &call);
     });
 }
+void SetGamePaused(bool paused) {
+    static int s_savedLevel = -1;  // the level before the menu froze the game; -1 = not frozen
+    // Level 2 is what the game uses while an item-get plays (itemCollect): the world stops. It takes 0..2 only.
+    constexpr uint32_t kPauseLevel = 2;
+    Enqueue([=](CpuContext* cpu) {
+        if (paused && s_savedLevel < 0) {
+            s_savedLevel = int(CallGuest(cpu, 0x801A7A4C, 0));                // spmarioGetSystemLevel
+            if (uint32_t(s_savedLevel) < kPauseLevel) CallGuest(cpu, 0x801A79D0, kPauseLevel);  // spmarioSystemLevel
+        } else if (!paused && s_savedLevel >= 0) {
+            if (uint32_t(s_savedLevel) < kPauseLevel) CallGuest(cpu, 0x801A79D0, uint32_t(s_savedLevel));
+            s_savedLevel = -1;
+        }
+    });
+}
+int Seq() {
+    uint32_t now = 0;
+    return Memory::TryRead32(kNowSeq, now) ? int(now) : -1;
+}
+bool PauseMenuOpen() {
+    // pausewinWp (r13-0x75D0); its first word is the open flag (nonzero while the menu is up or animating).
+    uint32_t wp = 0, flags = 0;
+    return Memory::TryRead32(0x8056D950, wp) && Memory::TryRead32(wp, flags) && (flags & 1) != 0;
+}
 void RemoveCharOrPixl(int itemId) {
     // The game has no remove for these slots (pouchRemoveItem only handles item lists): make it not selectable with
     // the game's own call, then empty the slot (Pixls after it move up). The character played is left alone; the Pixl

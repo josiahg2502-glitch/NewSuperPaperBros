@@ -48,3 +48,5 @@ wiicompiled/buildtools/artifacts/
 launcher/linux/bin/
 launcher/linux/obj/
 launcher/linux/publish/
+
+tools/starter/out/

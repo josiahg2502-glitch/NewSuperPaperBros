@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Packs the Linux download: dist/NewSuperPaperBros-linux.tar.gz. Run on Linux or in WSL after tools/build-linux.sh
-# (and --pal) and a Windows build (Play\ holds the shared assets; tools\build-launcher.ps1 makes launcher\linux\publish).
+# (and --pal) and a Windows build (Play\ holds the shared assets).
 # Same contents as package-spm.ps1's engine\, with the Linux programs; the disc is never copied in.
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -15,11 +15,12 @@ for region in usa pal; do
     [[ -x $build/$region/build/WiiCompiled ]] || { echo "missing the $region build: run tools/build-linux.sh (and --pal)" >&2; exit 1; }
     cp "$build/$region/build/WiiCompiled" "$engine/nspb-engine-$region"
 done
-cp "$root/launcher/linux/publish/New Super Paper Bros" "$stage/"
+install -m 755 "$root/tools/starter/new-super-paper-bros.sh" "$stage/New Super Paper Bros"
 cp "$build/usa/build/_deps/png-build/libpng16.so.16" "$engine/"   # the one library the game does not build in
-cp -L "$build/sdl-shared/libSDL3.so.0" "$engine/"                 # the launcher's controller list
+cp -L "$build/sdl-shared/libSDL3.so.0" "$engine/"
 cp "$build/usa/build/dsp_coef.bin" "$build/usa/build/cacert.pem" "$build/usa/build/initial_pipeline_cache.db" "$root/Play/portable.txt" "$engine/"
 cp -r "$root/Play/startup" "$root/Play/wii_bootstrap" "$engine/"
+echo "$version" > "$engine/version.txt"   # the built-in updater compares this with the latest release
 # Built-in HQ music: the mod's brstm files that replaced the disc's own (Disc/sound_original keeps the originals).
 for original in "$root"/Disc/sound_original/*.brstm; do
     hq=$root/Disc/DATA/files/sound/$(basename "$original")

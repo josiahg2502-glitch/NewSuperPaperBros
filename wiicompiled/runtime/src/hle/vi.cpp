@@ -381,8 +381,14 @@ void WriteGuestStateLocked() {
     }
 }
 
+// Fast-forward: the game's clock runs this many times faster (1 = normal).
+std::atomic<uint32_t> g_viSpeed{1};
+
 // The interval to the next retrace: the display lock's while V-Sync holds one (NTSC only).
 std::chrono::nanoseconds ActiveIntervalLocked() {
+    if (const uint32_t speed = g_viSpeed.load(std::memory_order_relaxed); speed > 1) {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(g_vi.retraceInterval) / speed;
+    }
     if (g_vi.lockedInterval.count() > 0 && g_vi.tvFormat != 1) {
         return g_vi.lockedInterval;
     }
@@ -737,6 +743,14 @@ void VI_HLE_ForceRetrace(CpuContext* ctx) {
         target = g_vi.lastRetrace + ActiveIntervalLocked();
     }
     AdvanceRetrace(ctx, target, true);
+}
+
+void VI_HLE_SetSpeed(uint32_t speed) {
+    g_viSpeed.store(speed < 1 ? 1 : speed, std::memory_order_relaxed);
+}
+
+uint32_t VI_HLE_Speed() {
+    return g_viSpeed.load(std::memory_order_relaxed);
 }
 
 bool VI_HLE_IsAdvancingRetrace() {

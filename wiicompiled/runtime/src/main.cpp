@@ -66,6 +66,7 @@
 #include "frame_input.h"
 #include "det_clock.h"
 #include "game_folder.h"
+#include "mod_install.h"
 #include "abi_bridge.h"
 #include "guest_flat_memory.h"
 #include "gx_guest_write.h"
@@ -1408,12 +1409,20 @@ int RuntimeMain(int argc, char** argv) {
         if (const auto line = RuntimePlatform::PinCurrentThreadToFastCores(); !line.empty())
             RT_LOGF(RT_TAG_RUNTIME, "fast cores %s\n", line.c_str());
 #endif
-        // The player's own extracted game (game_folder.h); on Windows it is asked for at first start.
+        if (const char* selftest = std::getenv("SPM_SELFTEST"); selftest && *selftest == '1') {
+            const bool ok = ModInstall::SelfCheck();
+            RT_LOGF(RT_TAG_RUNTIME, "selftest: mod install %s\n", ok ? "ok" : "FAILED");
+            SetRuntimeExitCodeImpl(ok ? 0 : 7);
+            ShutdownProcessTranscript();
+            return ok ? 0 : 7;
+        }
+        // The player's own game (game_folder.h): set up from a disc image at first start.
         if (!GameFolder::EnsureConfigured()) {
             SetRuntimeExitCodeImpl(0);
             ShutdownProcessTranscript();
             return 0;
         }
+        ModInstall::InstallDroppedZips();
 #if defined(__ANDROID__)
         // Determinism testing on a phone: debug.nsmbw.det=1 turns the lockstep timing on,
         // debug.nsmbw.dethash / detdump set NSMBW_DET_HASH / NSMBW_DET_DUMP (det_hash.h) and

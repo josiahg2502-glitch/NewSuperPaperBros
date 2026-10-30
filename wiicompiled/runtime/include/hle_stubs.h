@@ -35,6 +35,9 @@ void GXDL_HLE_LoadState(SaveState::Reader& in);
 // for the GXCopyDisp producer path and false for retrace-context presents.
 void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace);
 bool VI_HLE_IsAdvancingRetrace();
+// Fast-forward: the game's clock runs `speed` times faster (1 = normal).
+void VI_HLE_SetSpeed(uint32_t speed);
+uint32_t VI_HLE_Speed();
 void VI_HLE_SetXfbReady(uint32_t xfbAddr); // Called by GXCopyDisp to signal EFB→XFB copy
 void Audio_HLE_Tick(CpuContext* ctx, uint32_t deltaMicros);
 void Audio_HLE_Poll(CpuContext* ctx);
