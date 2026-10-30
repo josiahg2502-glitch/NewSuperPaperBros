@@ -3431,6 +3431,62 @@ void DrawUpdateNotice() {
     GameLayout::DrawText(list, view, *font, u, 0.0f, y, 18.0f, 0x18120CFFu, 0x18120CFFu, 1.0f, 1, 1);
 }
 
+// SPM_TEST_REBIND=1 (tests): a virtual SDL gamepad is plugged in, Options > Controls > "Controller: Jump (2)" is
+// selected, the pad's West button is pressed, and the new binding (shown and saved) is checked.
+void RebindSelfTest() {
+    static const bool on = std::getenv("SPM_TEST_REBIND") != nullptr;
+    static int stage = 0, frames = 0;
+    static SDL_JoystickID padId = 0;
+    static SDL_Joystick* pad = nullptr;
+    if (!on || stage < 0) return;
+    ++frames;
+    if (stage == 0) {
+        SDL_VirtualJoystickDesc desc;
+        SDL_INIT_INTERFACE(&desc);
+        desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+        desc.naxes = SDL_GAMEPAD_AXIS_COUNT;
+        desc.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+        desc.button_mask = 0xFFFFFFFFu;
+        desc.axis_mask = (1u << SDL_GAMEPAD_AXIS_COUNT) - 1u;
+        desc.name = "Rebind test pad";
+        padId = SDL_AttachVirtualJoystick(&desc);
+        pad = padId ? SDL_OpenJoystick(padId) : nullptr;
+        RT_LOGF(RT_TAG_RUNTIME, "rebind test: virtual pad %s\n", pad ? "attached" : SDL_GetError());
+        stage = pad ? 1 : -1;
+        frames = 0;
+    } else if (stage == 1) {  // the game picks the pad up as a controller, then the row starts its capture
+        int port = -1;  // a real controller may already be player 1: rebind the virtual pad's own port
+        for (uint32_t p = 0; p < PAD_MAX_CONTROLLERS && port < 0; ++p) {
+            const int index = PADGetIndexForPort(p);
+            if (index >= 0 && PADGetSDLGamepadForIndex(static_cast<uint32_t>(index)) == SDL_GetGamepadFromID(padId)) port = int(p);
+        }
+        if (port >= 0) {
+            g_controllerPort = port;
+            for (const OptRow& row : OptionsRows(3))
+                if (row.label == "Controller: Jump (2)") row.step(0);
+            RT_LOGF(RT_TAG_RUNTIME, "rebind test: was %s, capturing %d\n", PadBindingLabel(PAD_BUTTON_A).c_str(), g_optPadCapture);
+            stage = g_optPadCapture >= 0 ? 2 : -1;
+            frames = 0;
+        } else if (frames > 600) {
+            RT_LOGF(RT_TAG_RUNTIME, "rebind test: FAILED (the pad never reached a controller port)\n");
+            stage = -1;
+        }
+    } else if (stage == 2) {
+        PollOptionsCapture();
+        if (frames == 10) SDL_SetJoystickVirtualButton(pad, SDL_GAMEPAD_BUTTON_WEST, true);
+        if (g_optPadCapture < 0 || frames > 300) {
+            SDL_SetJoystickVirtualButton(pad, SDL_GAMEPAD_BUTTON_WEST, false);
+            const std::string now = PadBindingLabel(PAD_BUTTON_A);
+            std::ifstream cfg(RuntimeConfigFile::ApplicationDataDirectory() / "Config.toml");
+            const std::string text((std::istreambuf_iterator<char>(cfg)), {});
+            const bool saved = text.find("west") != std::string::npos;  // [controller] jump = "west"
+            RT_LOGF(RT_TAG_RUNTIME, "rebind test: %s (Jump is now %s, saved %s)\n",
+                    now.rfind("West", 0) == 0 && saved ? "PASSED" : "FAILED", now.c_str(), saved ? "yes" : "no");
+            stage = -1;
+        }
+    }
+}
+
 void HandleOptionsInput() {
     PollOptionsCapture();
     const uint32_t ev = g_optEvents.exchange(0);
@@ -3638,6 +3694,7 @@ void Draw() noexcept {
         DrawShaderCompilationStatus();
     }
     NetplayUi::Draw();
+    RebindSelfTest();
     if (g_optToggleRequest.exchange(false)) SetOptionsOpen(!g_optOpen);
     if (g_optOpen) HandleOptionsInput();
     UpdateGameSpeed();
