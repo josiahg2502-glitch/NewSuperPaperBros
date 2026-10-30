@@ -1,9 +1,10 @@
 NEW SUPER PAPER BROS. {VERSION}
 ==============================
-Start: open "New Super Paper Bros" (New Super Paper Bros.exe on Windows).
+Start: open "New Super Paper Bros" (New Super Paper Bros.exe) and press PLAY.
 
-First time only: the game asks for your Super Paper Mario disc image (.iso / .ciso / .wbfs, USA R8PE01 or Europe
-R8PP01) and sets itself up from it. Or put the image in this folder before starting. You can delete the image after.
+First time only: choose your Super Paper Mario disc image (.iso / .ciso / .wbfs, USA R8PE01 or Europe R8PP01) on the
+launcher's Play page; it is set up inside this folder. You can delete the image after. The launcher also has display,
+controls and mods pages; the same settings are in the game's own Options menu.
 
 Options: press HOME (F10 on a keyboard, the Guide button on a controller) in the game. Display, sound, controls
 (keyboard and controller buttons), cheats, mods, updates, Save game and quitting are all there. F11 switches between

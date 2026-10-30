@@ -1,10 +1,11 @@
 NEW SUPER PAPER BROS. {VERSION} for Linux
 =========================================
-Start: open "New Super Paper Bros". (If your file manager won't run it: right-click it > Properties > allow running
-as a program, or run  ./"New Super Paper Bros"  in a terminal.)
+Start: open "New Super Paper Bros" and press PLAY. (If your file manager won't run it: right-click it > Properties >
+allow running as a program, or run  ./"New Super Paper Bros"  in a terminal.)
 
-First time only: put your Super Paper Mario disc image (.iso / .ciso / .wbfs, USA R8PE01 or Europe R8PP01) in this
-folder, then start the game; it sets itself up from it. You can delete the image after.
+First time only: choose your Super Paper Mario disc image (.iso / .ciso / .wbfs, USA R8PE01 or Europe R8PP01) on the
+launcher's Play page; it is set up inside this folder. You can delete the image after. The launcher also has display,
+controls and mods pages; the same settings are in the game's own Options menu.
 
 Options: press HOME (F10 on a keyboard, the Guide button on a controller) in the game. Display, sound, controls
 (keyboard and controller buttons), cheats, mods, updates, Save game and quitting are all there. F11 switches between
