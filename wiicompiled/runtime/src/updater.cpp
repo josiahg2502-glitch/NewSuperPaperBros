@@ -28,8 +28,12 @@ namespace fs = std::filesystem;
 
 namespace Updater {
 namespace {
-constexpr const char* kApi = "https://api.github.com/repos/josiahg2502-glitch/NewSuperPaperBros/releases/latest";
-constexpr const char* kDownload = "https://github.com/josiahg2502-glitch/NewSuperPaperBros/releases/download/";
+// SPM_UPDATE_TEST_URL=http://127.0.0.1:port: a local stand-in for GitHub (latest.json, <tag>/<asset>) in tests.
+const char* const kTestUrl = std::getenv("SPM_UPDATE_TEST_URL");
+const std::string kApi = kTestUrl ? std::string(kTestUrl) + "/latest.json"
+                                  : "https://api.github.com/repos/josiahg2502-glitch/NewSuperPaperBros/releases/latest";
+const std::string kDownload = kTestUrl ? std::string(kTestUrl) + "/"
+                                       : "https://github.com/josiahg2502-glitch/NewSuperPaperBros/releases/download/";
 #if defined(_WIN32)
 constexpr const char* kAsset = "NewSuperPaperBros.zip";
 #else
@@ -87,6 +91,8 @@ bool Newer(const std::string& latest, const std::string& current) {
     return false;
 }
 
+void Download();
+
 void Check() {
     const fs::path json = EngineDir() / "UserData" / "update_check.json";
     std::error_code ec;
@@ -109,6 +115,10 @@ void Check() {
     g_latest = tag;
     g_state = Newer(tag, g_current) ? State::Available : State::UpToDate;
     RT_LOGF(RT_TAG_RUNTIME, "update check: running %s, latest %s\n", g_current.c_str(), tag.c_str());
+    if (kTestUrl && std::getenv("SPM_UPDATE_TEST_INSTALL") && g_state == State::Available) {  // tests: as if chosen in Options
+        g_state = State::Downloading;
+        std::thread(Download).detach();
+    }
 }
 
 void Download() {
@@ -145,21 +155,29 @@ void Download() {
         return;
     }
 #if defined(_WIN32)
-    const fs::path script = work / "update.cmd";
-    const std::string pid = std::to_string(GetCurrentProcessId());
-    std::ofstream out(script);
-    out << "@echo off\r\n"
-        << ":wait\r\n"
-        << "tasklist /FI \"PID eq " << pid << "\" | find \"" << pid << "\" >nul && (timeout /t 1 /nobreak >nul & goto wait)\r\n"
-        << "robocopy " << Quote(unpacked) << " " << Quote(root) << " /E /R:30 /W:1 >nul\r\n"
-        << "start \"\" " << Quote(root / "New Super Paper Bros.exe") << "\r\n"
-        << "cd /d " << Quote(root) << "\r\n"
-        << "rmdir /s /q " << Quote(work) << "\r\n";
+    // PowerShell, not a .cmd: started without a console, cmd's `tasklist | find` wait loop hung forever (find.exe
+    // never returned), so the copy never happened.
+    const fs::path script = work / "update.ps1";
+    const auto psQuote = [](const fs::path& p) {
+        std::string s = RuntimeConfigFile::PathToUtf8(p), q = "'";
+        for (const char c : s) q += c == '\'' ? std::string("''") : std::string(1, c);
+        return q + "'";
+    };
+    std::ofstream out(script, std::ios::binary);
+    out << "\xEF\xBB\xBF"  // UTF-8 BOM: Windows PowerShell reads the paths as UTF-8 then
+        << "Wait-Process -Id " << GetCurrentProcessId() << " -ErrorAction SilentlyContinue\r\n"
+        << "robocopy " << psQuote(unpacked) << " " << psQuote(root) << " /E /R:30 /W:1 | Out-Null\r\n"
+        << "Start-Process -FilePath " << psQuote(root / "New Super Paper Bros.exe") << " -WorkingDirectory " << psQuote(root) << "\r\n"
+        << "Set-Location -LiteralPath " << psQuote(root) << "\r\n"
+        << "Remove-Item -LiteralPath " << psQuote(work) << " -Recurse -Force -ErrorAction SilentlyContinue\r\n";
     out.close();
-    std::wstring cmd = L"cmd /c \"" + script.wstring() + L"\"";
+    std::wstring cmd = L"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" +
+                       script.wstring() + L"\"";
     STARTUPINFOW si{sizeof si};
     PROCESS_INFORMATION pi{};
-    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | DETACHED_PROCESS, nullptr, nullptr, &si, &pi)) {
+    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB, nullptr,
+                        nullptr, &si, &pi) &&
+        !CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
         g_state = State::Failed;
         return;
     }
