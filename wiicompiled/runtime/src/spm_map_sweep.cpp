@@ -566,7 +566,7 @@ struct Sweep {
 
 namespace {
 std::atomic<int> g_saveStatus{0};
-std::atomic<bool> g_infiniteHp{false}, g_maxCoins{false};
+std::atomic<bool> g_infiniteHp{false}, g_maxCoins{false}, g_infiniteFlip{false}, g_maxTokens{false};
 
 void SaveAndCheatsStep(CpuContext* cpu) {
     uint32_t seq = 0;
@@ -575,15 +575,52 @@ void SaveAndCheatsStep(CpuContext* cpu) {
         g_saveStatus = 2;
         RT_LOGF(RT_TAG_RUNTIME, "save anywhere: saved\n");
     }
-    if (!g_infiniteHp && !g_maxCoins) return;
+    if (!g_infiniteHp && !g_maxCoins && !g_infiniteFlip && !g_maxTokens) return;
     const uint32_t pouch = CallGuest(cpu, 0x8014B594, 0);                                // pouchGetPtr
     if (!Memory::Contains(pouch, 0x20)) return;
     if (g_infiniteHp) Memory::Write32(pouch + 0x0C, Memory::Read32(pouch + 0x10));        // hp = max hp
     if (g_maxCoins) Memory::Write32(pouch + 0x1C, 999);
+    if (g_infiniteFlip) Memory::Write32(pouch + 0x14, 10);                                // flip meter: pouchResetFlip's full value
+    if (g_maxTokens) CallGuest(cpu, 0x8014EEF8, 9999);                                    // pouchSetArcadeTokens (caps at 9999)
 }
 } // namespace
 
+// SPM_TEST_CHEATS=1: in a map, turn on every Options > Cheats cheat, then log what the pouch shows (tests).
+void CheatSelfTest(CpuContext* cpu) {
+    static const bool on = std::getenv("SPM_TEST_CHEATS") != nullptr;
+    static uint32_t frames = 0;
+    uint32_t seq = 0;
+    if (!on || !cpu || !Memory::TryRead32(kNowSeq, seq) || seq != 2) return;
+    const auto stats = [&](const char* when) {
+        const uint32_t pouch = CallGuest(cpu, 0x8014B594, 0);
+        RT_LOGF(RT_TAG_RUNTIME,
+                "cheat test %s: hp %u/%u coins %u flip %u tokens %u score %u level %u attack %u cards %u maps %u items %u chars %u pixls %u\n",
+                when, Memory::Read32(pouch + 0x0C), Memory::Read32(pouch + 0x10), Memory::Read32(pouch + 0x1C),
+                Memory::Read32(pouch + 0x14), CallGuest(cpu, 0x8014EEE8, 0), CallGuest(cpu, 0x8014CA04, 0),
+                CallGuest(cpu, 0x8014C6FC, 0), CallGuest(cpu, 0x8014C8D4, 0), CallGuest(cpu, 0x8014F5BC, 0),
+                CallGuest(cpu, 0x8014F394, 0), CallGuest(cpu, 0x8014EF2C, 0), CallGuest(cpu, 0x8014F12C, 0),
+                CallGuest(cpu, 0x8014F17C, 0));
+    };
+    if (++frames == 120) {
+        stats("before");
+        SetInfiniteHp(true);
+        SetMaxCoins(true);
+        SetInfiniteFlip(true);
+        SetMaxArcadeTokens(true);
+        AddScore(10000);
+        AddAttack(1);
+        AddMaxHp(5);
+        AddItem(82);  // Ultra Shroom Shake
+        AddItemRange(282, 537);
+        AddItemRange(234, 281);
+        for (int id = 217; id <= 231; ++id) Unlock(id, id >= 220);
+    } else if (frames == 240) {
+        stats("after");
+    }
+}
+
 void Tick(CpuContext* cpu, uint32_t presentedFrames) {
+    CheatSelfTest(cpu);
     SaveAndCheatsStep(cpu);
     if (cpu) ModRuntime::Frame(cpu);
     // SPM_MARIO_LOG=1: Mario's position / speed / motion / buttons every 15 frames in a map (spm-headers MarioWork).
@@ -716,6 +753,29 @@ void SaveGame() {
 int SaveStatus() { return g_saveStatus.load(); }
 void SetInfiniteHp(bool on) { g_infiniteHp = on; }
 void SetMaxCoins(bool on) { g_maxCoins = on; }
+void SetInfiniteFlip(bool on) { g_infiniteFlip = on; }
+void SetMaxArcadeTokens(bool on) { g_maxTokens = on; }
+void AddScore(int amount) {
+    Enqueue([=](CpuContext* cpu) { CallGuest(cpu, 0x8014CA14, uint32_t(amount)); });            // pouchAddXp
+}
+void AddAttack(int amount) {
+    Enqueue([=](CpuContext* cpu) { CallGuest(cpu, 0x8014C8E4, uint32_t(amount)); });            // pouchAddAttack
+}
+void AddMaxHp(int amount) {
+    Enqueue([=](CpuContext* cpu) {
+        const int maxHp = int(CallGuest(cpu, 0x8014C9F4, 0)) + amount;                       // pouchGetMaxHp
+        CallGuest(cpu, 0x8014C9C0, uint32_t(maxHp));                                         // pouchSetMaxHp
+        CallGuest(cpu, 0x8014C920, uint32_t(maxHp));                                         // pouchSetHp: refilled too
+    });
+}
+void AddItemRange(int first, int last) {
+    Enqueue([=](CpuContext* cpu) {
+        int added = 0;
+        for (int id = first; id <= last; ++id)
+            if (!CallGuest(cpu, 0x8014D100, uint32_t(id)) && CallGuest(cpu, 0x8014CB04, uint32_t(id))) ++added;  // pouchCheckHaveItem, pouchAddItem
+        RT_LOGF(RT_TAG_RUNTIME, "cheat: items %d-%d, %d added\n", first, last, added);
+    });
+}
 bool PauseMenuOpen() {
     // pausewinWp (r13-0x75D0); its first word is the open flag (nonzero while the menu is up or animating).
     uint32_t wp = 0, flags = 0;

@@ -3303,6 +3303,33 @@ std::vector<OptRow> OptionsRows(int tab) {
                         "Your HP stays full."});
         rows.push_back({"999 coins", OnOff(g_cheatCoins), [](int) { SpmMapSweep::SetMaxCoins(g_cheatCoins = !g_cheatCoins); },
                         "Your coins stay at 999."});
+        static bool s_flip = false, s_tokens = false;
+        rows.push_back({"Infinite 3D time", OnOff(s_flip), [](int) { SpmMapSweep::SetInfiniteFlip(s_flip = !s_flip); },
+                        "Mario can stay flipped into 3D as long as he likes."});
+        rows.push_back({"9999 arcade tokens", OnOff(s_tokens), [](int) { SpmMapSweep::SetMaxArcadeTokens(s_tokens = !s_tokens); },
+                        "For Mr. Game Guy's arcade in Flipside."});
+        rows.push_back({"Score +10,000", "", [](int d) { if (d == 0) SpmMapSweep::AddScore(10000); },
+                        "Adds 10,000 points to your score."});
+        rows.push_back({"Attack +1", "", [](int d) { if (d == 0) SpmMapSweep::AddAttack(1); }, "Stronger stomps and hits. Saved with your game."});
+        rows.push_back({"Max HP +5", "", [](int d) { if (d == 0) SpmMapSweep::AddMaxHp(5); }, "Also refills your HP. Saved with your game."});
+        {
+            // Every usable item and dish (ids 65-215), picked with left / right and given with A / 2.
+            static std::vector<const DebugItemName*> items;
+            if (items.empty())
+                for (const auto& item : kDebugItems)
+                    if (item.id >= 65 && item.id <= 215) items.push_back(&item);
+            static int s_item = 0;
+            const DebugItemName* item = items[static_cast<size_t>(std::clamp(s_item, 0, int(items.size()) - 1))];
+            const int count = int(items.size());
+            rows.push_back({"Give item", DebugName(*item), [item, count](int d) {
+                if (d != 0) { s_item = Cycle(s_item, d, count); return; }
+                SpmMapSweep::AddItem(item->id);
+            }, "Left / right picks an item or dish, A / 2 puts it in your bag (it holds 10)."});
+        }
+        rows.push_back({"All catch cards", "", [](int d) { if (d == 0) SpmMapSweep::AddItemRange(282, 537); },
+                        "Every card in the card collection. Saved with your game."});
+        rows.push_back({"All maps", "", [](int d) { if (d == 0) SpmMapSweep::AddItemRange(234, 281); },
+                        "Every treasure map. Saved with your game."});
         rows.push_back({"Unlock all characters and Pixls", "", [](int d) {
             if (d == 0) for (int id = 217; id <= 231; ++id) SpmMapSweep::Unlock(id, id >= 220);
         }, "Peach, Bowser, Luigi and every Pixl join you. This is saved with your game."});
