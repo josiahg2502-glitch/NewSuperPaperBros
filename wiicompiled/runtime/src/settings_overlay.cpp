@@ -1419,8 +1419,8 @@ void DrawGraphicsSettings() {
             "Requests the closest native-resolution display mode to the output frame "
             "rate (60 Hz, or the frame interpolation target).");
     }
-    constexpr std::array<const char*, 4> kFrameInterpolationModes{
-        "Off", "120 FPS", "180 FPS", "240 FPS (fast PCs)",
+    constexpr std::array<const char*, 2> kFrameInterpolationModes{
+        "Off", "120 FPS",
     };
     const char* currentFrameInterpolationMode =
         kFrameInterpolationModes[static_cast<size_t>(g_frameInterpolationMode)];
@@ -3269,7 +3269,7 @@ std::vector<OptRow> OptionsRows(int tab) {
         }, (aspectMode != DisplaySettings::kAspect4x3) != DisplaySettings::GameWidescreen()
                ? "Switching between 4:3 and widescreen takes effect after a restart."
                : "Fill Window uses every pixel of wide and ultrawide screens."});
-        static constexpr const char* kRates[] = {"60 FPS (original)", "120 FPS", "180 FPS", "240 FPS"};
+        static constexpr const char* kRates[] = {"60 FPS (original)", "120 FPS"};
         rows.push_back({"Frame rate", kRates[g_frameInterpolationMode], [](int d) {
             SetFrameInterpolationMode(Cycle(std::min(g_frameInterpolationMode, 1), d == 0 ? 1 : d, 2));  // 60 or 120
         }, "Above 60, extra frames are made between the game's own for smoother motion."});
