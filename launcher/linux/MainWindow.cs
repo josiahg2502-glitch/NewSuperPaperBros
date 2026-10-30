@@ -662,7 +662,7 @@ sealed class MainWindow : Window
         body.Children.Add(Choice("Display mode", "display_mode", new[] { ("Borderless fullscreen", "\"borderless\""), ("Windowed", "\"windowed\""), ("Exclusive fullscreen", "\"exclusive\"") }));
         body.Children.Add(Choice("Resolution", "resolution_multiplier", new[] { ("1080p", "2.25"), ("4K (2160p)", "4.5"), ("Match the screen", "0"), ("1440p", "3"), ("720p", "1.5"), ("480p (original)", "1") }));
         body.Children.Add(Choice("Aspect ratio", "aspect_mode", new[] { ("Cinematic 2.39:1", "3"), ("Fill the screen", "2"), ("16:9", "1"), ("Original 4:3", "0") }));
-        body.Children.Add(Choice("Frame interpolation", "frame_interpolation_fps", new[] { ("120 FPS", "120"), ("180 FPS", "180"), ("240 FPS (fast PCs)", "240"), ("Off (60 FPS)", "0") }));
+        body.Children.Add(Choice("Frame interpolation", "frame_interpolation_fps", new[] { ("120 FPS", "120"), ("Off (60 FPS)", "0") }));
         body.Children.Add(Choice("Vsync", "vsync", new[] { ("On (no screen tearing)", "true"), ("Off", "false") }));
         body.Children.Add(Note("Changes are saved at once and used the next time the game starts. The same settings are in the game's F10 menu. " +
                                "Cinematic and Fill widen the game's camera (more of the level is visible); 16:9 keeps the Wii picture with bars on wider screens. " +

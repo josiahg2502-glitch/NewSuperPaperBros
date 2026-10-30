@@ -366,11 +366,9 @@ bool g_attenuateMusicWhenMediaPlays = RuntimeConfigFile::AttenuateMusicWhenMedia
 int g_frameInterpolationMode = [] {
     switch (RuntimeConfigFile::FrameInterpolationFps(0)) {
     case 120:
-        return 1;
-    case 180:
-        return 2;
+    case 180:  // this game tops out at 120 (the user's call): older 180 / 240 settings come in as 120
     case 240:
-        return 3;
+        return 1;
     default:
         return 0;
     }
@@ -3273,7 +3271,7 @@ std::vector<OptRow> OptionsRows(int tab) {
                : "Fill Window uses every pixel of wide and ultrawide screens."});
         static constexpr const char* kRates[] = {"60 FPS (original)", "120 FPS", "180 FPS", "240 FPS"};
         rows.push_back({"Frame rate", kRates[g_frameInterpolationMode], [](int d) {
-            SetFrameInterpolationMode(Cycle(g_frameInterpolationMode, d == 0 ? 1 : d, 4));
+            SetFrameInterpolationMode(Cycle(std::min(g_frameInterpolationMode, 1), d == 0 ? 1 : d, 2));  // 60 or 120
         }, "Above 60, extra frames are made between the game's own for smoother motion."});
         rows.push_back({"V-Sync", OnOff(g_vsync.load()), [](int) { SetVSync(!g_vsync.load()); },
                         "No screen tearing. Turn off only if your screen has its own sync (G-Sync, FreeSync)."});
