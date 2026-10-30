@@ -1458,6 +1458,15 @@ int RuntimeMain(int argc, char** argv) {
                 std::string error;
                 const bool usable = DiscImage::Probe(RuntimeConfigFile::PathFromUtf8(image), info, error);
                 RT_LOGF(RT_TAG_RUNTIME, "selftest: image %s: %s\n", image, usable ? (info.id + " rev " + std::to_string(info.revision)).c_str() : error.c_str());
+                ok = ok && usable;
+                // SPM_SELFTEST_EXTRACT=<folder>: also extract it there, as the first-run setup does (no window).
+                if (const char* extractTo = std::getenv("SPM_SELFTEST_EXTRACT"); usable && extractTo) {
+                    int files = 0;
+                    const bool extracted = DiscImage::Extract(RuntimeConfigFile::PathFromUtf8(image), RuntimeConfigFile::PathFromUtf8(extractTo),
+                                                              [&](int done, int) { files = done; }, error);
+                    RT_LOGF(RT_TAG_RUNTIME, "selftest: extract: %s (%d files)\n", extracted ? "ok" : error.c_str(), files);
+                    ok = ok && extracted;
+                }
             }
             SetRuntimeExitCodeImpl(ok ? 0 : 7);
             ShutdownProcessTranscript();
