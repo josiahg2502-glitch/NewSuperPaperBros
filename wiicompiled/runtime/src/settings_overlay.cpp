@@ -2740,7 +2740,13 @@ void HandleEvents(const AuroraEvent* events) noexcept {
                 g_ffPadHeld = down;
             } else if (down && ev->sdl.gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE) {
                 RequestOptionsToggle();
+            } else if (down && ev->sdl.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_STICK && !g_optOpen && g_optPadCapture < 0) {
+                SpmMapSweep::CycleCharacter();  // issue #46: swap character without a menu
             }
+        }
+        if (ev->sdl.type == SDL_EVENT_KEY_DOWN && !ev->sdl.key.repeat && ev->sdl.key.scancode == SDL_SCANCODE_V &&
+            !g_rebind.active && Keybinds::Capturing() < 0 && !g_optOpen) {
+            SpmMapSweep::CycleCharacter();
         }
         if (!g_rebind.active && g_muteHotkey != PAD_KEY_INVALID &&
             IsToggleKey(ev->sdl, static_cast<SDL_Scancode>(g_muteHotkey))) {

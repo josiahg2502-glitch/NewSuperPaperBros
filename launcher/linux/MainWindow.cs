@@ -524,8 +524,10 @@ sealed class MainWindow : Window
         // The Wii system language the game sees (runtime SCGetLanguage, Config.toml [game] language). The European
         // disc ships English, French, German, Spanish and Italian text; the USA disc is English only.
         body.Children.Add(Choice("Language (European disc)", "language", new[] { ("English", "\"en\""), ("Français", "\"fr\""), ("Deutsch", "\"de\""), ("Español", "\"es\""), ("Italiano", "\"it\"") }, "game"));
+        // Issue #65: players forgot the launcher was still open after quitting the game.
+        body.Children.Add(Choice("When the game closes", "close_with_game", new[] { ("Keep the launcher open", "false"), ("Close the launcher too", "true") }, "launcher"));
         body.Children.Add(gameNote = Note("The game starts borderless at 1080p. " +
-                               "In the game, F10 opens the settings menu (resolution, aspect, controllers, audio) and F11 switches between fullscreen and a window."));
+                               "In the game, HOME or F10 opens Options (display, sound, controls, cheats, mods) and F11 switches between fullscreen and a window."));
         body.Children.Add(Row(
             Btn("Open game folder", () => Open(play), Paper),
             Btn("Open saves folder", () => Open(Directory.CreateDirectory(SaveDataDir()).FullName), Paper),
@@ -649,7 +651,11 @@ sealed class MainWindow : Window
         if (game != null)
         {
             game.EnableRaisingEvents = true;
-            game.Exited += (_, _) => Dispatcher.UIThread.Post(Gamepads.Resume);
+            game.Exited += (_, _) => Dispatcher.UIThread.Post(() =>
+            {
+                Gamepads.Resume();
+                if (config.Get("launcher", "close_with_game") == "true") Close();
+            });
             WindowState = WindowState.Minimized;
         }
         else Gamepads.Resume();

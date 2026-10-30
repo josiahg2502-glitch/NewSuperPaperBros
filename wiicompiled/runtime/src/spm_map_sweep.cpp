@@ -620,6 +620,10 @@ void CheatSelfTest(CpuContext* cpu) {
     } else if (frames == 360) {
         const uint32_t mw = CallGuest(cpu, 0x801214EC, 0);
         RT_LOGF(RT_TAG_RUNTIME, "cheat test: character now %d (2 = Bowser)\n", int8_t(Memory::Read8(mw + 0x38)));
+        CycleCharacter();  // the V key: on to the next one the player has
+    } else if (frames == 480) {
+        const uint32_t mw = CallGuest(cpu, 0x801214EC, 0);
+        RT_LOGF(RT_TAG_RUNTIME, "cheat test: after the swap button, character %d\n", int8_t(Memory::Read8(mw + 0x38)));
     }
 }
 
@@ -799,6 +803,21 @@ void SwitchCharacter(int index) {
         }
         CallGuest(cpu, 0x80146A7C, uint32_t(index));        // marioChangeCharacter, as the character menu does
         RT_LOGF(RT_TAG_RUNTIME, "cheat: switched to character %d (now %d)\n", index, int8_t(Memory::Read8(mw + 0x38)));
+    });
+}
+void CycleCharacter() {
+    Enqueue([](CpuContext* cpu) {
+        const uint32_t mw = CallGuest(cpu, 0x801214EC, 0);                                      // marioGetPtr
+        const uint32_t pouch = CallGuest(cpu, 0x8014B594, 0);                                   // pouchGetPtr
+        if (!Memory::Contains(mw, 0x40) || !Memory::Contains(pouch, 0xC4)) return;
+        const int current = int8_t(Memory::Read8(mw + 0x38));
+        for (int step = 1; step < 4; ++step) {  // the next character the player has (pouch character slots, +0xB4)
+            const int next = (current + step) % 4;
+            if (int16_t(Memory::Read16(pouch + 0xB4 + 4 * next + 2)) == 216 + next) {
+                CallGuest(cpu, 0x80146A7C, uint32_t(next));                                    // marioChangeCharacter
+                return;
+            }
+        }
     });
 }
 void AddItemRange(int first, int last) {

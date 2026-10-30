@@ -13,6 +13,8 @@ fullscreen and a window.
 
 Save anywhere: Options > Game > Save game saves to the file you are playing, right where you stand.
 
+Switch character: press V on the keyboard or click the left stick on a controller.
+
 Fast-forward: hold F on the keyboard, or click the right stick on a controller (Options > Game sets the speed,
 or makes it a toggle).
 

@@ -34,6 +34,7 @@ void AddScore(int amount);           // pouchAddXp: levels come as the game coun
 void AddAttack(int amount);
 void AddMaxHp(int amount);           // and refills HP
 void AddItemRange(int first, int last);
+void CycleCharacter();               // the next character the player has (V key / left stick click)
 void SwitchCharacter(int index);     // 0 Mario, 1 Peach, 2 Bowser, 3 Luigi: anywhere, joining first if needed  // pouchAddItem for each id not owned yet (maps, catch cards)
 void RemoveCharOrPixl(int itemId);   // character / Pixl slot; not the character played or the Pixl in use
 void Unlock(int itemId, bool pixl);   // add the character / Pixl item, then make it selectable
