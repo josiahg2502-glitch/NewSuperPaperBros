@@ -640,6 +640,12 @@ void Assert57SelfTest(CpuContext* cpu) {
     call.gpr[5] = strings + 157;
     call.gpr[6] = strings + 187;
     InvokeIndirectCpu(0x8019B6C8u, &call);  // __assert2
+    call = *cpu;                            // and extLoadTexture's, as in the v1.0.6 crash log
+    call.gpr[3] = strings + 44;
+    call.gpr[4] = 839;
+    call.gpr[5] = strings + 157;
+    call.gpr[6] = 0x80325487u;              // "bank_adr+size < 2*512*1024"
+    InvokeIndirectCpu(0x8019B6C8u, &call);
     RT_LOGF(RT_TAG_RUNTIME, "assert57 test: the game carried on\n");
 }
 
