@@ -506,6 +506,11 @@ static void apply_xf_projection() {
     if (aspect > 1.68f && aspect < 1.88f && screenSized) {
       widen = aspect / wide;
       g_spmScreenWiden = widen;
+    } else if (screenSized && g_gxState.projType == GX_PERSPECTIVE && aspect > 1.30f && aspect < 1.37f) {
+      // SPM's effects camera is 4:3 (door opening, pipes, flip panels: they redraw a copy of part of the screen).
+      // In the Wii's anamorphic 16:9 frame it lines up with the 16:9 view, so it takes the view's squeeze too;
+      // left alone, past 16:9 those effects came out stretched and off to the side of what they copy.
+      widen = g_spmScreenWiden < 1.0f ? g_spmScreenWiden : (16.0f / 9.0f) / wide;
     }
   } else if (wide <= 0.0f) {
     g_spmScreenWiden = 1.0f;
